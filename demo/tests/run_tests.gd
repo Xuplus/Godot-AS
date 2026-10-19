@@ -57,6 +57,18 @@ func _ready() -> void:
 	check(not wrong.has_method("get_ticks"), "Node2D script is not instantiated on a MeshInstance3D")
 	wrong.queue_free()
 
+	var api := Node2D.new()
+	api.set_script(load("res://tests/api_test.as"))
+	add_child(api)
+	var hits: Array = []
+	api.connect("hit", func(n): hits.append(n))
+	var api_failures: String = api.call("run")
+	for line in api_failures.split("
+", false):
+		check(false, "api_test: " + line)
+	check(api_failures.is_empty(), "api_test.as: generated API from AngelScript")
+	check(hits == [3], "script signal emitted from AngelScript reached GDScript")
+
 	print("  (expected) the next error is a deliberate script exception:")
 	from_code.call("crash")
 	check(from_code.get_script() == script, "node survives a script exception")

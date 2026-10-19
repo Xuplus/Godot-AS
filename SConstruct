@@ -1,8 +1,13 @@
 #!/usr/bin/env python
 import os
+import sys
+
+sys.path.insert(0, Dir("tools").srcnode().abspath)
+from generate_bindings import generate as generate_bindings
 
 # Oldest Godot we support. GDExtensions are forward compatible, so this also runs on newer engines.
-env = SConscript("thirdparty/godot-cpp/SConstruct", {"api_version": "4.5"})
+API_VERSION = "4.5"
+env = SConscript("thirdparty/godot-cpp/SConstruct", {"api_version": API_VERSION})
 
 # --- AngelScript (vendored, built as a static part of the extension) ---------------------------
 as_env = env.Clone()
@@ -32,7 +37,18 @@ as_objects = [as_env.SharedObject(s) for s in as_sources]
 # --- The extension ------------------------------------------------------------------------------
 env.Append(CPPPATH=["src/", "thirdparty/angelscript/include", "thirdparty/angelscript/add_on"])
 env.Append(CPPDEFINES=["AS_NO_EXCEPTIONS"])
-sources = Glob("src/*.cpp") + Glob("src/*/*.cpp")
+
+# Binding tables generated from the same extension_api.json godot-cpp is built against.
+api_json = "thirdparty/godot-cpp/gdextension/extension_api-{}.json".format(API_VERSION.replace(".", "-"))
+
+
+def build_bindings(target, source, env):
+    generate_bindings(str(source[0]), str(target[0]), env["precision"])
+
+
+bindings = env.Command("src/gen/api_data.gen.cpp", [api_json, "tools/generate_bindings.py"], build_bindings)
+
+sources = Glob("src/*.cpp") + Glob("src/bindings/*.cpp") + Glob("src/editor/*.cpp") + bindings
 
 if env["platform"] == "macos":
     library = env.SharedLibrary(

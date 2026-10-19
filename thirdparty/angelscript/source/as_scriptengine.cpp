@@ -970,6 +970,7 @@ asCScriptEngine::~asCScriptEngine()
 	for( asUINT n = 0; n < nameSpaces.GetLength(); n++ )
 		asDELETE(nameSpaces[n], asSNameSpace);
 	nameSpaces.SetLength(0);
+	nameSpaceLookup.EraseAll(); // GODOT-AS PATCH (perf)
 
 	asCThreadManager::Unprepare();
 }
@@ -1182,6 +1183,7 @@ asSNameSpace *asCScriptEngine::AddNameSpace(const char *name)
 
 	// TODO: thread-safety: This can potentially be called from multiple threads so it must be protected with critical section
 	nameSpaces.PushLast(ns);
+	nameSpaceLookup.Insert(ns->name, ns); // GODOT-AS PATCH (perf)
 
 	return ns;
 }
@@ -1189,10 +1191,11 @@ asSNameSpace *asCScriptEngine::AddNameSpace(const char *name)
 // internal
 asSNameSpace *asCScriptEngine::FindNameSpace(const char *name) const
 {
-	// TODO: optimize: Improve linear search
-	for( asUINT n = 0; n < nameSpaces.GetLength(); n++ )
-		if( nameSpaces[n]->name == name )
-			return nameSpaces[n];
+	// GODOT-AS PATCH (perf): map lookup instead of a linear search. With one namespace per engine
+	// class (for its enums and constants) this search ran on every method registration.
+	asSMapNode<asCString, asSNameSpace*> *cursor = 0;
+	if( nameSpaceLookup.MoveTo(&cursor, asCString(name)) )
+		return cursor->value;
 
 	return 0;
 }

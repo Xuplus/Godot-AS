@@ -7,7 +7,11 @@
 
 #include <angelscript.h>
 
+#include <mutex>
+#include <unordered_set>
 #include <vector>
+
+class AngelScript;
 
 using namespace godot;
 
@@ -38,17 +42,24 @@ protected:
 public:
 	static AngelScriptLanguage *get_singleton() { return singleton; }
 
-	// Type ids of registered types, cached after registration.
-	int type_id_string = 0;
-	int type_id_vector2 = 0;
-	int type_id_vector3 = 0;
-	int type_id_native_object = 0;
+	double registration_ms = 0.0;
+	int registration_errors = 0;
+
+	std::mutex scripts_mutex;
+	std::unordered_set<AngelScript *> scripts;
+
+	void script_created(AngelScript *p_script);
+	void script_destroyed(AngelScript *p_script);
+	// Every live script refreshes its exports after the project module was rebuilt.
+	void project_rebuilt();
 
 	asIScriptEngine *get_engine();
 	void ensure_engine();
 
 	// Collect diagnostics from compilations done while the returned scope is alive.
 	void set_diagnostic_sink(std::vector<ASDiagnostic> *p_sink) { diagnostic_sink = p_sink; }
+	// Prints collected diagnostics the way the message callback would have.
+	void report_diagnostics(const std::vector<ASDiagnostic> &p_diagnostics);
 
 	// Contexts are pooled per thread; nested calls simply take another context from the pool.
 	asIScriptContext *acquire_context();
@@ -58,8 +69,8 @@ public:
 	// Returns true if the function ran to completion.
 	bool execute(asIScriptContext *p_ctx);
 
-	// Phase 0 benchmark: cost of registering a ClassDB-sized API with AngelScript.
-	static double benchmark_registration(int p_classes, int p_methods_per_class);
+	// Startup cost of registering the Godot API: { "registration_ms", "registration_errors" }.
+	static Dictionary get_startup_stats();
 
 	AngelScriptLanguage();
 	~AngelScriptLanguage();

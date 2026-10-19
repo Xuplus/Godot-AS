@@ -1,57 +1,26 @@
 #pragma once
 
+#include "as_project.h"
+
 #include <godot_cpp/classes/script.hpp>
 #include <godot_cpp/classes/script_extension.hpp>
 #include <godot_cpp/classes/script_language.hpp>
-#include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/templates/hash_set.hpp>
-#include <godot_cpp/variant/string_name.hpp>
-
-#include <angelscript.h>
 
 #include <memory>
 #include <mutex>
-#include <vector>
 
 using namespace godot;
-
-// Everything we know about one compiled script class. Instances hold a shared_ptr to the class
-// they were created from, so recompiling a script never leaves a live instance pointing at
-// functions from a different type.
-struct ASCompiledClass {
-	struct Property {
-		StringName name;
-		int index = -1; // property index in the AngelScript type
-		int type_id = 0;
-		Variant::Type variant_type = Variant::NIL;
-		bool exported = false;
-		Variant default_value;
-	};
-
-	asIScriptModule *module = nullptr;
-	asITypeInfo *type = nullptr;
-	StringName native_base;
-	bool tool = false; // [tool] metadata on the class
-	int owner_property = -1; // index of the shim's __owner field
-	HashMap<StringName, asIScriptFunction *> methods;
-	std::vector<Property> properties;
-	HashMap<StringName, int> property_lookup; // name -> index in `properties`
-
-	const Property *find_property(const StringName &p_name) const {
-		const int *i = property_lookup.getptr(p_name);
-		return i ? &properties[*i] : nullptr;
-	}
-
-	~ASCompiledClass();
-};
 
 class AngelScript : public ScriptExtension {
 	GDCLASS(AngelScript, ScriptExtension);
 
 	String source;
 	String script_path; // set by the loader before the first reload
-	std::shared_ptr<ASCompiledClass> compiled;
-	bool tool = false;
+
+	// The class compiled for this file, refreshed whenever the project module is rebuilt.
+	mutable std::shared_ptr<ASCompiledClass> compiled;
+	mutable uint64_t compiled_generation = 0;
 
 	mutable std::mutex instances_mutex;
 	HashSet<GDExtensionObjectPtr> instance_owners;
@@ -64,15 +33,16 @@ protected:
 	static void _bind_methods() {}
 
 public:
-	// Compiles `p_source` into module `p_module_name`. On success, if `r_class` is not null it is
-	// filled with the main class of the file. Diagnostics go to the language's message callback.
-	static bool compile_source(const String &p_source, const String &p_path, const String &p_module_name, std::shared_ptr<ASCompiledClass> *r_class);
+	AngelScript();
+	~AngelScript();
 
 	void set_script_path(const String &p_path) { script_path = p_path; }
 	String get_script_path() const;
-	const std::shared_ptr<ASCompiledClass> &get_compiled() const { return compiled; }
+	const std::shared_ptr<ASCompiledClass> &get_compiled() const;
 
 	void instance_destroyed(GDExtensionObjectPtr p_owner);
+	// Called after every project rebuild, so placeholders pick up new exports.
+	void project_rebuilt();
 
 	// --- ScriptExtension -----------------------------------------------------------------------
 	bool _editor_can_reload_from_file() override;

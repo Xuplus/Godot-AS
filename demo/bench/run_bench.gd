@@ -45,13 +45,11 @@ func _ready() -> void:
 
 	compare("math_loop(10M)", &"math_loop", 10_000_000, as_node, gd_node)
 	compare("vector_loop(5M)", &"vector_loop", 5_000_000, as_node, gd_node)
-	timed("AS  vector_loop(5M) generic ops", as_node, &"vector_loop_generic", 5_000_000)
 	compare("vector_loop_floats(5M)", &"vector_loop_floats", 5_000_000, as_node, gd_node)
 	compare("fib(27)", &"fib", 27, as_node, gd_node)
 	compare("engine_get_only(1M)", &"engine_get_only", 1_000_000, as_node, gd_node)
-	compare("engine_calls(1M) ptrcall", &"engine_calls", 1_000_000, as_node, gd_node)
-	timed("AS  engine_calls(1M) generic", as_node, &"engine_calls_generic", 1_000_000)
-	timed("AS  engine_calls(1M) Variant call", as_node, &"engine_calls_variant", 1_000_000)
+	timed("AS  engine_get_only(1M) native handle", as_node, &"engine_get_direct", 1_000_000)
+	compare("engine_calls(1M)", &"engine_calls", 1_000_000, as_node, gd_node)
 
 	for pair in [["AS", as_node], ["GD", gd_node]]:
 		var t := Time.get_ticks_usec()
@@ -59,9 +57,8 @@ func _ready() -> void:
 			pair[1].call(&"noop")
 		results.append("%-34s %9.2f ms" % [pair[0] + "  1M calls Godot -> script", (Time.get_ticks_usec() - t) / 1000.0])
 
-	for spec in [[1000, 16], [1000, 32]]:
-		var ms: float = AngelScriptLanguage.benchmark_registration(spec[0], spec[1])
-		results.append("%-34s %9.2f ms" % ["register %d types x %d methods" % spec, ms])
+	var stats: Dictionary = AngelScriptLanguage.get_startup_stats()
+	results.append("%-34s %9.2f ms (%d errors)" % ["register the Godot API", stats.registration_ms, stats.registration_errors])
 
 	as_node.queue_free()
 	gd_node.queue_free()

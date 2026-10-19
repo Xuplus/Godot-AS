@@ -29,5 +29,11 @@ class Smoke : Node2D
 			total += i;
 		return total;
 	}
-	void crash() { native::Node2D_get_position(null); }
+	// Calls into a node that was already freed: must raise a script exception, not crash.
+	void crash()
+	{
+		Node2D@ n = Node2D();
+		n.free();
+		n.position = Vector2(1, 1);
+	}
 }

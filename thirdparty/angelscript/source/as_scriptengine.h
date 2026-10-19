@@ -459,6 +459,7 @@ public:
 	// These are shared between all entities and are
 	// only deleted once the engine is destroyed
 	asCArray<asSNameSpace*> nameSpaces;
+	asCMap<asCString, asSNameSpace*> nameSpaceLookup; // GODOT-AS PATCH (perf): index for FindNameSpace
 
 	// Callbacks for context pooling
 	asREQUESTCONTEXTFUNC_t  requestCtxFunc;

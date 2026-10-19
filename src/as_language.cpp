@@ -1,7 +1,8 @@
 #include "as_language.h"
 
+#include "as_project.h"
 #include "as_script.h"
-#include "bindings/bindings.h"
+#include "bindings/runtime.h"
 
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/time.hpp>
@@ -18,7 +19,7 @@ thread_local std::vector<asIScriptContext *> context_pool;
 }
 
 void AngelScriptLanguage::_bind_methods() {
-	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("benchmark_registration", "classes", "methods_per_class"), &AngelScriptLanguage::benchmark_registration);
+	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("get_startup_stats"), &AngelScriptLanguage::get_startup_stats);
 }
 
 AngelScriptLanguage::AngelScriptLanguage() {
@@ -29,6 +30,16 @@ AngelScriptLanguage::~AngelScriptLanguage() {
 	_finish();
 	if (singleton == this) {
 		singleton = nullptr;
+	}
+}
+
+void AngelScriptLanguage::report_diagnostics(const std::vector<ASDiagnostic> &p_diagnostics) {
+	for (const ASDiagnostic &d : p_diagnostics) {
+		if (d.type == asMSGTYPE_INFORMATION) {
+			continue;
+		}
+		CharString file = d.section.utf8();
+		_err_print_error("AngelScript", file.get_data(), d.line, d.message, false, d.type == asMSGTYPE_WARNING);
 	}
 }
 
@@ -46,8 +57,7 @@ void AngelScriptLanguage::message_callback(const asSMessageInfo *p_msg, void *p_
 		return;
 	}
 	if (d.type == asMSGTYPE_INFORMATION) {
-		UtilityFunctions::print(vformat("%s:%d: %s", d.section, d.line, d.message));
-		return;
+		return; // "Compiling void Foo::bar()" context lines; the errors that follow carry file and line
 	}
 	CharString file = d.section.utf8();
 	_err_print_error("AngelScript", file.get_data(), d.line, d.message, false, d.type == asMSGTYPE_WARNING);
@@ -59,12 +69,9 @@ void AngelScriptLanguage::ensure_engine() {
 	}
 	engine = asCreateScriptEngine();
 	engine->SetMessageCallback(asFUNCTION(message_callback), this, asCALL_CDECL);
-	register_core_bindings(engine);
-
-	type_id_string = engine->GetTypeIdByDecl("String");
-	type_id_vector2 = engine->GetTypeIdByDecl("Vector2");
-	type_id_vector3 = engine->GetTypeIdByDecl("Vector3");
-	type_id_native_object = engine->GetTypeIdByDecl("native::Object");
+	uint64_t start = Time::get_singleton()->get_ticks_usec();
+	registration_errors = asrt::register_api(engine);
+	registration_ms = (Time::get_singleton()->get_ticks_usec() - start) / 1000.0;
 }
 
 asIScriptEngine *AngelScriptLanguage::get_engine() {
@@ -106,42 +113,37 @@ bool AngelScriptLanguage::execute(asIScriptContext *p_ctx) {
 	return false;
 }
 
-// --- Benchmark ----------------------------------------------------------------------------------
+// --- Scripts --------------------------------------------------------------------------------------
 
-static void dummy_generic(asIScriptGeneric *) {}
-
-double AngelScriptLanguage::benchmark_registration(int p_classes, int p_methods_per_class) {
-	// A throwaway engine with the core types, then a ClassDB-sized set of reference types with
-	// methods whose declarations resemble real Godot signatures.
-	asIScriptEngine *e = asCreateScriptEngine();
-	register_core_bindings(e);
-
-	static const char *signatures[] = {
-		"void %s(const Vector2 &in, float)",
-		"Vector2 %s() const",
-		"bool %s(int, const String &in)",
-		"String %s() const",
-		"void %s(native::Object@)",
-		"float %s(float, float, bool)",
-	};
-	const int sig_count = sizeof(signatures) / sizeof(signatures[0]);
-
-	uint64_t start = Time::get_singleton()->get_ticks_usec();
-	char type_name[64];
-	char method_name[64];
-	char decl[256];
-	for (int c = 0; c < p_classes; c++) {
-		snprintf(type_name, sizeof(type_name), "BenchType%d", c);
-		e->RegisterObjectType(type_name, 0, asOBJ_REF | asOBJ_NOCOUNT);
-		for (int m = 0; m < p_methods_per_class; m++) {
-			snprintf(method_name, sizeof(method_name), "method_%d", m);
-			snprintf(decl, sizeof(decl), signatures[(c + m) % sig_count], method_name);
-			e->RegisterObjectMethod(type_name, decl, asFUNCTION(dummy_generic), asCALL_GENERIC);
-		}
+Dictionary AngelScriptLanguage::get_startup_stats() {
+	Dictionary d;
+	if (singleton) {
+		singleton->ensure_engine();
+		d["registration_ms"] = singleton->registration_ms;
+		d["registration_errors"] = singleton->registration_errors;
 	}
-	uint64_t end = Time::get_singleton()->get_ticks_usec();
-	e->ShutDownAndRelease();
-	return double(end - start) / 1000.0;
+	return d;
+}
+
+void AngelScriptLanguage::script_created(AngelScript *p_script) {
+	std::lock_guard<std::mutex> lock(scripts_mutex);
+	scripts.insert(p_script);
+}
+
+void AngelScriptLanguage::script_destroyed(AngelScript *p_script) {
+	std::lock_guard<std::mutex> lock(scripts_mutex);
+	scripts.erase(p_script);
+}
+
+void AngelScriptLanguage::project_rebuilt() {
+	std::vector<AngelScript *> live;
+	{
+		std::lock_guard<std::mutex> lock(scripts_mutex);
+		live.assign(scripts.begin(), scripts.end());
+	}
+	for (AngelScript *s : live) {
+		s->project_rebuilt();
+	}
 }
 
 // --- ScriptLanguageExtension ----------------------------------------------------------------------
@@ -159,6 +161,7 @@ void AngelScriptLanguage::_finish() {
 		ctx->Release();
 	}
 	context_pool.clear();
+	ASProject::get().clear();
 	engine->ShutDownAndRelease();
 	engine = nullptr;
 }
@@ -229,14 +232,14 @@ Dictionary AngelScriptLanguage::_validate(const String &p_script, const String &
 	AngelScriptLanguage *self = const_cast<AngelScriptLanguage *>(this);
 	std::vector<ASDiagnostic> diagnostics;
 	self->set_diagnostic_sink(&diagnostics);
-	bool ok = AngelScript::compile_source(p_script, p_path, "__validate__", nullptr);
+	bool ok = ASProject::get().validate(p_path, p_script);
 	self->set_diagnostic_sink(nullptr);
 
 	Array errors;
 	Array warnings;
 	for (const ASDiagnostic &d : diagnostics) {
-		if (d.section == get_shim_section_name()) {
-			continue;
+		if (d.section != p_path) {
+			continue; // errors in other files are reported when those files are edited
 		}
 		Dictionary e;
 		e["line"] = d.line;

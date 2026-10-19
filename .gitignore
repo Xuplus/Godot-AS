@@ -11,3 +11,6 @@
 # Built extension and Godot's per-project cache
 demo/bin/
 demo/.godot/
+
+# Generated binding tables (built by SCons from extension_api.json)
+src/gen/

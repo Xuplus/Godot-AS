@@ -21,19 +21,6 @@ class Bench : Node2D
 		return v.x + v.y;
 	}
 
-	// Experiment: the same loop with the Vector2 operators bound through the generic convention.
-	float vector_loop_generic(int n)
-	{
-		Vector2 v(0, 0);
-		Vector2 d(0.5f, 0.25f);
-		for (int i = 0; i < n; i++)
-		{
-			v.__add_assign_generic(d.__mul_generic(0.99f));
-			v.__sub_assign_generic(d.__mul_generic(0.5f));
-		}
-		return v.x + v.y;
-	}
-
 	// Experiment: the same math on plain floats, i.e. pure VM speed with no native calls.
 	float vector_loop_floats(int n)
 	{
@@ -56,35 +43,28 @@ class Bench : Node2D
 		return acc;
 	}
 
+	// Same as engine_get_only, through a native handle: no hop through the generated base class.
+	// Shows what Phase 2's native inheritance saves on every engine access.
+	float engine_get_direct(int n)
+	{
+		Node2D@ me = this;
+		float acc = 0;
+		for (int i = 0; i < n; i++)
+			acc += me.position.x;
+		return acc;
+	}
+
 	int fib(int n)
 	{
 		return n < 2 ? n : fib(n - 1) + fib(n - 2);
 	}
 
-	// Two engine calls per iteration (get_position + set_position), direct ptrcall bindings.
+	// Two engine calls per iteration (get_position + set_position).
 	float engine_calls(int n)
 	{
 		position = Vector2(0, 0);
 		for (int i = 0; i < n; i++)
 			position = position + Vector2(1, 0);
-		return position.x;
-	}
-
-	// Same, through AngelScript's portable generic calling convention.
-	float engine_calls_generic(int n)
-	{
-		__set_position_generic(Vector2(0, 0));
-		for (int i = 0; i < n; i++)
-			__set_position_generic(__get_position_generic() + Vector2(1, 0));
-		return position.x;
-	}
-
-	// Same, through Object::call by name with Variant arguments (reflection-style bindings).
-	float engine_calls_variant(int n)
-	{
-		__set_position_variant(Vector2(0, 0));
-		for (int i = 0; i < n; i++)
-			__set_position_variant(__get_position_variant() + Vector2(1, 0));
 		return position.x;
 	}
 

@@ -1595,11 +1595,13 @@ int asCBuilder::CheckNameConflictMember(asCTypeInfo *t, const char *name, asCScr
 	// Properties are allowed to have the same name as virtual properties
 	if( !isProperty && !isVirtualProperty )
 	{
-		asCArray<int> methods = ot->methods;
+		// GODOT-AS PATCH (perf): iterate the methods in place and compare without allocating a
+		// substring; the copy and allocation per method dominated registering large interfaces.
+		const asCArray<int> &methods = ot->methods;
 		for( asUINT n = 0; n < methods.GetLength(); n++ )
 		{
 			asCScriptFunction *func = engine->scriptFunctions[methods[n]];
-			if( func->IsProperty() && func->name.SubString(4) == name )
+			if( func->IsProperty() && func->name.GetLength() > 4 && strcmp(func->name.AddressOf() + 4, name) == 0 )
 			{
 				if( code )
 				{
@@ -1633,7 +1635,7 @@ int asCBuilder::CheckNameConflictMember(asCTypeInfo *t, const char *name, asCScr
 	// Property names must be checked against method names
 	if( isProperty )
 	{
-		asCArray<int> methods = ot->methods;
+		const asCArray<int> &methods = ot->methods; // GODOT-AS PATCH (perf): no copy
 		for( asUINT n = 0; n < methods.GetLength(); n++ )
 		{
 			if( engine->scriptFunctions[methods[n]]->name == name )
@@ -1709,12 +1711,16 @@ int asCBuilder::CheckNameConflict(const char *name, asCScriptNode *node, asCScri
 	// Don't do this when the check is for a virtual property, as it is allowed to have multiple overloads for virtual properties
 	if( !isProperty || !isVirtualProperty )
 	{
-		for (asUINT n = 0; n < engine->registeredGlobalFuncs.GetSize(); n++)
+		// GODOT-AS PATCH (perf): look up the two possible accessor names in the symbol table instead
+		// of scanning every registered global function (and allocating a substring for each).
+		asCString accessorNames[2] = { asCString("get_") + name, asCString("set_") + name };
+		for (asUINT a = 0; a < 2; a++)
 		{
-			asCScriptFunction *func = engine->registeredGlobalFuncs.Get(n);
-			if (func->IsProperty() &&
-				func->nameSpace == ns &&
-				func->name.SubString(4) == name)
+		const asCArray<asUINT> &idxs = engine->registeredGlobalFuncs.GetIndexes(ns, accessorNames[a]);
+		for (asUINT n = 0; n < idxs.GetLength(); n++)
+		{
+			asCScriptFunction *func = engine->registeredGlobalFuncs.Get(idxs[n]);
+			if (func && func->IsProperty())
 			{
 				if (code)
 				{
@@ -1729,6 +1735,7 @@ int asCBuilder::CheckNameConflict(const char *name, asCScriptNode *node, asCScri
 
 				return -1;
 			}
+		}
 		}
 	}
 
@@ -1929,6 +1936,52 @@ int asCBuilder::CheckNameConflict(const char *name, asCScriptNode *node, asCScri
 // -3 invalid signature
 // -4 mismatching type for get/set
 // -5 name conflict
+// GODOT-AS PATCH (perf): find the matching accessor without scanning every function in the
+// engine. The original loop made registering a large application interface quadratic: with
+// Godot's API (~160k methods) registration took 45 s instead of about one second.
+asCScriptFunction *asCBuilder::FindVirtualPropertyAccessor(asCScriptFunction *func, const asCString &name)
+{
+	// Accessors of an application registered type are always among that type's registered methods
+	if( func->objectType && !(func->objectType->flags & asOBJ_SCRIPT_OBJECT) )
+	{
+		for( asUINT n = 0; n < func->objectType->methods.GetLength(); n++ )
+		{
+			asCScriptFunction *f = engine->scriptFunctions[func->objectType->methods[n]];
+			if( f && f->name == name && f->IsProperty() )
+				return f;
+		}
+		return 0;
+	}
+
+	// Registered global accessors are indexed by namespace and name
+	if( func->objectType == 0 && func->module == 0 )
+	{
+		const asCArray<asUINT> &idxs = engine->registeredGlobalFuncs.GetIndexes(func->nameSpace, name);
+		for( asUINT n = 0; n < idxs.GetLength(); n++ )
+		{
+			asCScriptFunction *f = engine->registeredGlobalFuncs.Get(idxs[n]);
+			if( f && f->IsProperty() )
+				return f;
+		}
+		return 0;
+	}
+
+	// Script declared accessors: the original search
+	for( asUINT n = 0; n < engine->scriptFunctions.GetLength(); n++ )
+	{
+		asCScriptFunction *f = engine->scriptFunctions[n];
+		if( f == 0 || f->name != name || !f->IsProperty() )
+			continue;
+
+		// Is it the same scope?
+		if( func->module != f->module || func->nameSpace != f->nameSpace || func->objectType != f->objectType )
+			continue;
+
+		return f;
+	}
+	return 0;
+}
+
 int asCBuilder::ValidateVirtualProperty(asCScriptFunction *func)
 {
 	asASSERT( func->IsProperty() );
@@ -1954,21 +2007,12 @@ int asCBuilder::ValidateVirtualProperty(asCScriptFunction *func)
 		getType = func->returnType;
 		
 		// Find if there is a set accessor in the same scope, and then validate the type of it
-		// TODO: optimize search
 		asCString setName = "set_" + func->name.SubString(4);
-		for( asUINT n = 0; n < engine->scriptFunctions.GetLength(); n++ )
+		asCScriptFunction *setFunc = FindVirtualPropertyAccessor(func, setName);
+		if( setFunc )
 		{
-			asCScriptFunction *setFunc = engine->scriptFunctions[n];
-			if( setFunc == 0 || setFunc->name != setName || !setFunc->IsProperty() )
-				continue;
-			
-			// Is it the same scope?
-			if( func->module != setFunc->module || func->nameSpace != setFunc->nameSpace || func->objectType != setFunc->objectType )
-				continue;
-			
 			setType = setFunc->parameterTypes[setFunc->parameterTypes.GetLength() - 1];
 			found = true;
-			break;
 		}
 	}
 	else
@@ -1976,21 +2020,12 @@ int asCBuilder::ValidateVirtualProperty(asCScriptFunction *func)
 		setType = func->parameterTypes[func->parameterTypes.GetLength() - 1];
 		
 		// Find if there is a get accessor in the same scope and then validate the type of it
-		// TODO: optimize search
 		asCString getName = "get_" + func->name.SubString(4);
-		for( asUINT n = 0; n < engine->scriptFunctions.GetLength(); n++ )
+		asCScriptFunction *getFunc = FindVirtualPropertyAccessor(func, getName);
+		if( getFunc )
 		{
-			asCScriptFunction *getFunc = engine->scriptFunctions[n];
-			if( getFunc == 0 || getFunc->name != getName || !getFunc->IsProperty() )
-				continue;
-			
-			// Is it the same scope?
-			if( func->module != getFunc->module || func->nameSpace != getFunc->nameSpace || func->objectType != getFunc->objectType )
-				continue;
-			
 			getType = getFunc->returnType;
 			found = true;
-			break;
 		}
 	}
 	
