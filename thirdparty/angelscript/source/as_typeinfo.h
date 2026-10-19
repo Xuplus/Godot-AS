@@ -79,6 +79,7 @@ public:
 	const char      *GetName() const;
 	const char      *GetNamespace() const;
 	asITypeInfo     *GetBaseType() const { return 0; }
+	asITypeInfo     *GetNativeBaseType() const { return 0; } // GODOT-AS PATCH (native base classes)
 	bool             DerivesFrom(const asITypeInfo *objType) const { UNUSED_VAR(objType); return 0; }
 	asQWORD          GetFlags() const;
 	asUINT           GetSize() const;

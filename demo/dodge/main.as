@@ -1,20 +1,21 @@
 // Port of main.gd from Godot's "Dodge the Creeps" demo (MIT, KidsCanCode / Godot contributors).
 class Main : Node
 {
-	[export] PackedScene@ mob_scene;
+	[export] PackedScene mob_scene;
 	int score = 0;
 
-	HUD@ hud() { return cast<HUD>(get_node("HUD")); }
-	Timer@ timer(const String &in name) { return cast<Timer>(get_node(name)); }
-	AudioStreamPlayer@ audio(const String &in name) { return cast<AudioStreamPlayer>(get_node(name)); }
+	HUD hud() { return cast<HUD>(get_node("HUD")); }
+	Timer timer(const String &in name) { return cast<Timer>(get_node(name)); }
+	AudioStreamPlayer audio(const String &in name) { return cast<AudioStreamPlayer>(get_node(name)); }
 
 	void game_over()
 	{
 		timer("ScoreTimer").stop();
 		timer("MobTimer").stop();
-		hud().show_game_over();
 		audio("Music").stop();
 		audio("DeathSound").play();
+		// show_game_over() awaits, which pauses this function with it, so it goes last.
+		hud().show_game_over();
 	}
 
 	void new_game()
@@ -31,10 +32,10 @@ class Main : Node
 	void _on_MobTimer_timeout()
 	{
 		// Create a new instance of the Mob scene.
-		RigidBody2D@ mob = cast<RigidBody2D>(mob_scene.instantiate());
+		RigidBody2D mob = cast<RigidBody2D>(mob_scene.instantiate());
 
 		// Choose a random location on Path2D.
-		PathFollow2D@ mob_spawn_location = cast<PathFollow2D>(get_node("MobPath/MobSpawnLocation"));
+		PathFollow2D mob_spawn_location = cast<PathFollow2D>(get_node("MobPath/MobSpawnLocation"));
 		mob_spawn_location.progress_ratio = randf();
 
 		// Set the mob's position to a random location.

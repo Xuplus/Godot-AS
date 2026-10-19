@@ -48,6 +48,7 @@ BEGIN_AS_NAMESPACE
 asCObjectType::asCObjectType() : asCTypeInfo()
 {
 	derivedFrom = 0;
+	nativeBase = 0; // GODOT-AS PATCH (native base classes)
 
 	acceptValueSubType = true;
 	acceptRefSubType   = true;
@@ -60,6 +61,7 @@ asCObjectType::asCObjectType() : asCTypeInfo()
 asCObjectType::asCObjectType(asCScriptEngine *in_engine) : asCTypeInfo(in_engine)
 {
 	derivedFrom  = 0;
+	nativeBase   = 0; // GODOT-AS PATCH (native base classes)
 
 	acceptValueSubType = true;
 	acceptRefSubType = true;
@@ -133,6 +135,11 @@ void asCObjectType::DestroyInternal()
 	if( derivedFrom )
 		derivedFrom->ReleaseInternal();
 	derivedFrom = 0;
+
+	// GODOT-AS PATCH (native base classes)
+	if( nativeBase )
+		nativeBase->ReleaseInternal();
+	nativeBase = 0;
 
 	ReleaseAllProperties();
 
@@ -390,6 +397,16 @@ const char *asCObjectType::GetPropertyDeclaration(asUINT index, bool includeName
 asITypeInfo *asCObjectType::GetBaseType() const
 {
 	return derivedFrom; 
+}
+
+// GODOT-AS PATCH (native base classes): the registered type a script class inherits from, directly or
+// through its script base classes
+asCObjectType *asCObjectType::GetNativeBase() const
+{
+	for( const asCObjectType *ot = this; ot; ot = ot->derivedFrom )
+		if( ot->nativeBase )
+			return ot->nativeBase;
+	return 0;
 }
 
 asUINT asCObjectType::GetBehaviourCount() const

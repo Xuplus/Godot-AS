@@ -663,6 +663,25 @@ asUINT asGetTypeTraits()
 
 // Interface declarations
 
+// GODOT-AS PATCH (native base classes): lets script classes inherit from registered reference types.
+// Such a class gets a hidden handle to the native object as its first property ("__self"). Members of
+// the native type that the script class doesn't declare are reached through it, handles convert
+// implicitly to the native type, and the class is an implicit handle type (`Player p` is a handle).
+class asINativeBaseHandler
+{
+public:
+	// Whether script classes may inherit from this registered type.
+	virtual bool CanInheritFrom(asITypeInfo *nativeType) = 0;
+	// A script object whose class has a native base was created, before its constructor runs. The
+	// handler stores a handle to the native object in property 0.
+	virtual void OnScriptObjectCreated(asIScriptObject *obj, asITypeInfo *nativeBase) = 0;
+	// Whether the native type has a virtual method of this name, which script methods may override.
+	virtual bool HasVirtualMethod(asITypeInfo *nativeBase, const char *name) = 0;
+
+protected:
+	virtual ~asINativeBaseHandler() {}
+};
+
 class asIScriptEngine
 {
 public:
@@ -703,6 +722,17 @@ public:
 	virtual int            RegisterObjectProperty(const char *obj, const char *declaration, int byteOffset, int compositeOffset = 0, bool isCompositeIndirect = false) = 0;
 	virtual int            RegisterObjectMethod(const char *obj, const char *declaration, const asSFuncPtr &funcPointer, asDWORD callConv, void *auxiliary = 0, int compositeOffset = 0, bool isCompositeIndirect = false) = 0;
 	virtual int            RegisterObjectBehaviour(const char *obj, asEBehaviours behaviour, const char *declaration, const asSFuncPtr &funcPointer, asDWORD callConv, void *auxiliary = 0, int compositeOffset = 0, bool isCompositeIndirect = false) = 0;
+	// GODOT-AS PATCH (registered inheritance): make a registered reference type derive from another
+	// registered reference type. The derived type inherits the base's methods (a method name declared
+	// on the derived type hides the base's methods of that name), and handles convert implicitly to
+	// the base. Call after all methods of both types are registered, bases before derived types.
+	virtual int            RegisterObjectBaseType(const char *obj, const char *base) = 0;
+	// GODOT-AS PATCH (native base classes)
+	virtual void           SetNativeBaseHandler(asINativeBaseHandler *handler) = 0;
+	// GODOT-AS PATCH (method references): a method name used where the factory's return type is
+	// expected compiles to factory(object, "name"). The factory is a registered global function
+	// `T f(Obj@, const string &in)`, where string is the registered string type.
+	virtual int            SetMethodReferenceFactory(int funcId) = 0;
 	virtual int            RegisterInterface(const char *name) = 0;
 	virtual int            RegisterInterfaceMethod(const char *intf, const char *declaration) = 0;
 	virtual asUINT         GetObjectTypeCount() const = 0;
@@ -1083,6 +1113,7 @@ public:
 	virtual const char      *GetName() const = 0;
 	virtual	const char      *GetNamespace() const = 0;
 	virtual asITypeInfo     *GetBaseType() const = 0;
+	virtual asITypeInfo     *GetNativeBaseType() const = 0; // GODOT-AS PATCH (native base classes)
 	virtual bool             DerivesFrom(const asITypeInfo *objType) const = 0;
 	virtual asQWORD          GetFlags() const = 0;
 	virtual asUINT           GetSize() const = 0;

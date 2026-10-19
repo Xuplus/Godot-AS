@@ -5234,7 +5234,9 @@ void asCCompiler::CompileForEachStatement(asCScriptNode* node, asCByteCode* bc)
 	asCDataType rangeDt = rangeExpr.type.dataType;
 	rangeDt.MakeReference(false);
 	if (rangeDt.SupportHandles()) rangeDt.MakeHandle(true);
-	int rangeOffset = AllocateVariable(rangeDt, false);
+	// GODOT-AS PATCH (foreach over value types): the loop reads the range through a pointer (PshVPtr),
+	// so a value-type range must live on the heap, not inline in the stack frame
+	int rangeOffset = AllocateVariable(rangeDt, false, !rangeDt.IsObjectHandle() && rangeDt.IsObject());
 	if (DeclareVariable("", rangeDt, rangeOffset, &rangeExpr.bc, node) < 0)
 		return;
 
@@ -7543,6 +7545,73 @@ asUINT asCCompiler::ImplicitConvPrimitiveToPrimitive(asCExprContext *ctx, const 
 	return cost;
 }
 
+// GODOT-AS PATCH (method references)
+// ctx names a method of the object on the stack. Compile factory(object, "method"), which the
+// application turns into a call-by-name reference (Godot's Callable).
+asUINT asCCompiler::ImplicitConvMethodToReference(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, bool generateCode)
+{
+	asCScriptFunction *factory = engine->scriptFunctions[engine->methodRefFactory];
+	asCObjectType *ot = CastToObjectType(ctx->type.dataType.GetTypeInfo());
+
+	// Calls by name only reach public methods
+	bool found = false;
+	for( asUINT n = 0; ot && n < ot->methods.GetLength(); n++ )
+	{
+		asCScriptFunction *func = engine->scriptFunctions[ot->methods[n]];
+		if( func->name == ctx->methodName && !func->IsPrivate() && !func->IsProtected() )
+			found = true;
+	}
+	if( !found )
+		return asCC_NO_CONV;
+
+	if( !generateCode )
+	{
+		ctx->type.Set(factory->returnType);
+		ctx->type.dataType.MakeReadOnly(to.IsReadOnly());
+		ctx->methodName = "";
+		return asCC_TO_OBJECT_CONV;
+	}
+
+	asCString methodName = ctx->methodName;
+	asCScriptNode *exprNode = ctx->exprNode ? ctx->exprNode : node;
+
+	// First argument: the object, already on the stack
+	asCExprContext objArg(engine);
+	MergeExprBytecodeAndType(&objArg, ctx);
+	objArg.methodName = "";
+	objArg.exprNode = exprNode;
+
+	// Second argument: the method name as a string constant
+	asCExprContext nameArg(engine);
+	void *strPtr = const_cast<void*>(engine->stringFactory->GetStringConstant(methodName.AddressOf(), (asUINT)methodName.GetLength()));
+	if( strPtr == 0 )
+	{
+		Error(TXT_NULL_POINTER_ACCESS, node);
+		ctx->type.SetDummy();
+		return asCC_NO_CONV;
+	}
+	usedStringConstants.PushLast(strPtr);
+	nameArg.bc.InstrPTR(asBC_PGA, strPtr);
+	nameArg.type.Set(engine->stringType);
+	nameArg.type.isConstant = true;
+	nameArg.type.isRefSafe = true;
+	nameArg.exprNode = exprNode;
+
+	asCArray<asCExprContext*> args;
+	args.PushLast(&objArg);
+	args.PushLast(&nameArg);
+
+	ctx->Clear();
+	ctx->exprNode = exprNode;
+	if( MakeFunctionCall(ctx, engine->methodRefFactory, 0, args, exprNode) < 0 )
+	{
+		ctx->type.SetDummy();
+		return asCC_NO_CONV;
+	}
+	ctx->type.dataType.MakeReadOnly(to.IsReadOnly());
+	return asCC_TO_OBJECT_CONV;
+}
+
 asUINT asCCompiler::ImplicitConvLambdaToFunc(asCExprContext *ctx, const asCDataType &to, asCScriptNode * /*node*/, EImplicitConv /*convType*/, bool generateCode)
 {
 	asASSERT( to.IsFuncdef() && ctx->IsLambda() );
@@ -7643,6 +7712,12 @@ asUINT asCCompiler::ImplicitConversion(asCExprContext *ctx, const asCDataType &t
 	// No conversion from void to any other type
 	if( ctx->type.dataType.GetTokenType() == ttVoid )
 		return asCC_NO_CONV;
+
+	// GODOT-AS PATCH (method references): a method name converts to the application's method
+	// reference type through its factory
+	if( ctx->IsClassMethod() && engine->methodRefFactory && !to.IsObjectHandle() &&
+		to.GetTypeInfo() && to.GetTypeInfo() == engine->scriptFunctions[engine->methodRefFactory]->returnType.GetTypeInfo() )
+		return ImplicitConvMethodToReference(ctx, to, node, generateCode);
 
 	// No conversion from class method to any type (it requires delegate)
 	if( ctx->IsClassMethod() )
@@ -8296,6 +8371,37 @@ asUINT asCCompiler::ImplicitConvObjectValue(asCExprContext *ctx, const asCDataTy
 
 asUINT asCCompiler::ImplicitConvObjectToObject(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, EImplicitConv convType, bool generateCode, bool allowObjectConstruct)
 {
+	// GODOT-AS PATCH (native base classes): a script object converts to whatever its native object
+	// converts to, unless the script class has its own conversion to that type
+	if( ctx->methodName == "" && !ctx->type.IsNullConstant() &&
+		ctx->type.dataType.GetTypeInfo() && to.GetTypeInfo() &&
+		(ctx->type.dataType.GetTypeInfo()->flags & asOBJ_SCRIPT_OBJECT) &&
+		!(to.GetTypeInfo()->flags & (asOBJ_SCRIPT_OBJECT | asOBJ_FUNCDEF)) )
+	{
+		asCObjectType *ot = CastToObjectType(ctx->type.dataType.GetTypeInfo());
+		asCObjectType *nativeBase = ot ? ot->GetNativeBase() : 0;
+		bool ownConversion = false;
+		for( asUINT n = 0; nativeBase && n < ot->methods.GetLength(); n++ )
+		{
+			asCScriptFunction *func = engine->scriptFunctions[ot->methods[n]];
+			if( (func->name == "opImplConv" || func->name == "opConv" || func->name == "opImplCast" || func->name == "opCast") &&
+				func->returnType.GetTypeInfo() == to.GetTypeInfo() )
+				ownConversion = true;
+		}
+		if( nativeBase && !ownConversion )
+		{
+			if( generateCode )
+				CompileNativeSelfAccess(ctx, node);
+			else
+			{
+				ctx->type.dataType = asCDataType::CreateObjectHandle(nativeBase, false);
+				ctx->type.dataType.MakeReference(true);
+				ctx->type.isVariable = false;
+				ctx->type.isTemporary = false;
+			}
+		}
+	}
+
 	// First try a ref cast
 	asUINT cost = ImplicitConvObjectRef(ctx, to, node, convType, generateCode);
 
@@ -10610,7 +10716,77 @@ asCCompiler::SYMBOLTYPE asCCompiler::SymbolLookupMember(const asCString &name, a
 		}
 	}
 
+	// GODOT-AS PATCH (native base classes): members of the native base that the class doesn't declare.
+	// outResult's type tells the callers that the member belongs to the native type.
+	if ((objType->flags & asOBJ_SCRIPT_OBJECT) && objType->GetNativeBase())
+		return SymbolLookupMember(name, objType->GetNativeBase(), outResult);
+
 	return SL_NOMATCH;
+}
+
+// GODOT-AS PATCH (native base classes)
+// Returns the native base when the name is a member that a script class reaches through its native base.
+asCObjectType *asCCompiler::GetNativeBaseForMember(asCTypeInfo *ti, const asCString &name)
+{
+	asCObjectType *ot = CastToObjectType(ti);
+	if (ot == 0 || !(ot->flags & asOBJ_SCRIPT_OBJECT))
+		return 0;
+	asCObjectType *nativeBase = ot->GetNativeBase();
+	if (nativeBase == 0)
+		return 0;
+
+	asCExprContext lookup(engine);
+	SYMBOLTYPE r = SymbolLookupMember(name, ot, &lookup);
+	if (r == SL_NOMATCH || r == SL_ERROR)
+		return 0;
+	return lookup.type.dataType.GetTypeInfo() == nativeBase ? nativeBase : 0;
+}
+
+// GODOT-AS PATCH (native base classes)
+// ctx holds an expression of a script class with a native base: an object, a reference or a handle.
+// Replace it with a reference to the hidden handle to the native object (property 0), as if
+// ".__self" had been compiled.
+void asCCompiler::CompileNativeSelfAccess(asCExprContext *ctx, asCScriptNode *node)
+{
+	if (!ctx->type.dataType.IsPrimitive())
+		Dereference(ctx, true);
+
+	if (ctx->type.dataType.IsObjectHandle())
+	{
+		// Convert the handle to a normal object
+		asCDataType dt = ctx->type.dataType;
+		dt.MakeHandle(false);
+		ImplicitConversion(ctx, dt, node, asIC_IMPLICIT_CONV);
+	}
+
+	asCObjectType *ot = CastToObjectType(ctx->type.dataType.GetTypeInfo());
+	asASSERT(ot && ot->GetNativeBase() && ot->properties.GetLength() > 0);
+	asCObjectProperty *prop = ot->properties[0];
+
+	// Put the offset on the stack (always emitted, so the type info is stored)
+	ctx->bc.InstrSHORT_DW(asBC_ADDSi, (short)prop->byteOffset, engine->GetTypeIdFromDataType(asCDataType::CreateType(ot, false)));
+
+	// Keep information about temporary variables as deferred expression
+	if (ctx->type.isTemporary)
+	{
+		asSDeferredParam deferred;
+		deferred.origExpr = 0;
+		deferred.argInOutFlags = asTM_INREF;
+		deferred.argNode = 0;
+		deferred.argType.SetVariable(ctx->type.dataType, ctx->type.stackOffset, true);
+		ctx->deferredParams.PushLast(deferred);
+	}
+
+	ctx->type.dataType = prop->type;
+	ctx->type.dataType.MakeReference(true);
+	ctx->type.dataType.MakeReadOnly(false);
+	ctx->type.isVariable = false;
+	ctx->type.isTemporary = false;
+	ctx->type.isLValue = false;
+
+	// The native object owns the script object, so it outlives any use of this handle. No
+	// temporary copy of the handle is needed to keep it alive during a call.
+	ctx->type.isRefSafe = true;
 }
 
 bool asCCompiler::isAmbiguousSymbol(const asCString &name, asCScriptNode* errNode, SYMBOLTYPE& currentType, SYMBOLTYPE nextType)
@@ -11028,6 +11204,30 @@ int asCCompiler::CompileVariableAccess(const asCString &name, const asCString &s
 			Error(msg, errNode);
 		}
 		return -1;
+	}
+
+	// GODOT-AS PATCH (native base classes): a member of the native base used through the implicit this.
+	// Compile it as this.__self.member.
+	if( !objType && scope == "" && outFunc && outFunc->objectType &&
+		(symbolType == SL_CLASSPROPACCESS || symbolType == SL_CLASSPROP || symbolType == SL_CLASSMETHOD) &&
+		lookupResult.type.dataType.GetTypeInfo() != 0 &&
+		lookupResult.type.dataType.GetTypeInfo() == outFunc->objectType->GetNativeBase() )
+	{
+		asCObjectType *nativeBase = outFunc->objectType->GetNativeBase();
+
+		// The object pointer is located at stack position 0
+		ctx->bc.InstrSHORT(asBC_PSF, 0);
+		ctx->type.SetVariable(asCDataType::CreateType(outFunc->objectType, false), 0, false);
+		ctx->type.dataType.MakeReference(true);
+		ctx->type.isRefSafe = true;
+		CompileNativeSelfAccess(ctx, errNode);
+
+		// Property accessors take the reference to the handle, like the implicit this reference;
+		// methods and properties expect the object pointer on the stack
+		if( symbolType != SL_CLASSPROPACCESS )
+			Dereference(ctx, true);
+
+		return CompileVariableAccess(name, scope, ctx, errNode, isOptional, nativeBase);
 	}
 
 	// It is a local variable or parameter?
@@ -12882,8 +13082,24 @@ int asCCompiler::CompileFunctionCall(asCScriptNode *node, asCExprContext *ctx, a
 			if (r < 0) return r;
 		}
 
+		// GODOT-AS PATCH (native base classes): a method of the native base called through the implicit
+		// this. Compile it as this.__self.method().
+		if (funcs.GetLength() && !objectType && outFunc->objectType && scope == "" &&
+			lookupResult.type.dataType.GetTypeInfo() != 0 &&
+			lookupResult.type.dataType.GetTypeInfo() == outFunc->objectType->GetNativeBase())
+		{
+			objectType = outFunc->objectType->GetNativeBase();
+
+			// The object pointer is located at stack position 0
+			ctx->bc.InstrSHORT(asBC_PSF, 0);
+			ctx->type.SetVariable(asCDataType::CreateType(outFunc->objectType, false), 0, false);
+			ctx->type.dataType.MakeReference(true);
+			ctx->type.isRefSafe = true;
+			CompileNativeSelfAccess(ctx, node);
+			objIsConst = false;
+		}
 		// If a class method is being called implicitly, then add the this pointer for the call
-		if (funcs.GetLength() && !objectType && outFunc->objectType)
+		else if (funcs.GetLength() && !objectType && outFunc->objectType)
 		{
 			// Verify that the identified function is actually part of the class hierarchy
 			if (!outFunc->objectType->DerivesFrom(lookupResult.type.dataType.GetTypeInfo()))
@@ -14293,6 +14509,10 @@ int asCCompiler::CompileExpressionPostOp(asCScriptNode *node, asCExprContext *ct
 			// Get the property name
 			asCString name(&script->code[node->firstChild->tokenPos], node->firstChild->tokenLength);
 
+			// GODOT-AS PATCH (native base classes): a member of the native base, reached through __self
+			if( ctx->type.dataType.IsObject() && GetNativeBaseForMember(ctx->type.dataType.GetTypeInfo(), name) )
+				CompileNativeSelfAccess(ctx, node);
+
 			if( ctx->type.dataType.IsObject() )
 			{
 				// We need to look for get/set property accessors.
@@ -14447,6 +14667,17 @@ int asCCompiler::CompileExpressionPostOp(asCScriptNode *node, asCExprContext *ct
 			// Process the get property accessor
 			if( ProcessPropertyGetAccessor(ctx, node) < 0 )
 				return -1;
+
+			// GODOT-AS PATCH (native base classes): a method of the native base, called through __self
+			{
+				asCScriptNode *nm = node->firstChild->firstChild;
+				if( nm && nm->nodeType == snIdentifier && nm->tokenType == ttIdentifier )
+				{
+					asCString methodName(&script->code[nm->tokenPos], nm->tokenLength);
+					if( GetNativeBaseForMember(ctx->type.dataType.GetTypeInfo(), methodName) )
+						CompileNativeSelfAccess(ctx, node);
+				}
+			}
 
 			// Compile function call
 			int r = CompileFunctionCall(node->firstChild, ctx, CastToObjectType(ctx->type.dataType.GetTypeInfo()), ctx->type.dataType.IsObjectConst());

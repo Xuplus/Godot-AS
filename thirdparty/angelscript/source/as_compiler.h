@@ -361,6 +361,9 @@ protected:
 	SYMBOLTYPE SymbolLookup(const asCString &name, const asCString &scope, asCObjectType *objType, asCExprContext *outResult, asCScriptNode* errNode);
 	SYMBOLTYPE SymbolLookupLocalVar(const asCString &name, asCExprContext *outResult);
 	SYMBOLTYPE SymbolLookupMember(const asCString &name, asCObjectType *objType, asCExprContext *outResult);
+	// GODOT-AS PATCH (native base classes)
+	asCObjectType *GetNativeBaseForMember(asCTypeInfo *ti, const asCString &name);
+	void CompileNativeSelfAccess(asCExprContext *ctx, asCScriptNode *node);
 
 	void DetermineSingleFunc(asCExprContext *ctx, asCScriptNode *node);
 
@@ -375,6 +378,7 @@ protected:
 	void   ImplicitConversionConstant(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, EImplicitConv convType);
 	void   ImplicitConvObjectToBestMathType(asCExprContext *ctx, asCScriptNode *node);
 	asUINT ImplicitConvLambdaToFunc(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, EImplicitConv convType, bool generateCode = true);
+	asUINT ImplicitConvMethodToReference(asCExprContext *ctx, const asCDataType &to, asCScriptNode *node, bool generateCode); // GODOT-AS PATCH (method references)
 
 	void LineInstr(asCByteCode *bc, size_t pos);
 

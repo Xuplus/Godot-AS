@@ -135,6 +135,10 @@ class Gen:
         if t.startswith("bitfield::"):
             return ("int64", "K_INT64", 0)
         if t.startswith("typedarray::"):
+            elem = self.typed_array_element(t[len("typedarray::"):])
+            if elem:
+                decl = f"TypedArray<{elem}>"
+                return (f"const {decl} &in" if is_arg else decl, "K_BUILTIN", VT["Array"])
             t = "Array"
         if t.startswith("typeddictionary::"):
             t = "Dictionary"
@@ -145,6 +149,16 @@ class Gen:
         if t in self.classes:
             kind = "K_REFOBJECT" if self.is_refcounted(t) else "K_OBJECT"
             return (f"{t}@", kind, VT["Object"])
+        return None
+
+    def typed_array_element(self, t):
+        """The AngelScript element type of a `typedarray::<t>`, or None to fall back to Array."""
+        if t == "int":
+            return "int64"
+        if t == "float":
+            return "double"
+        if t in ("bool", "Variant") or t in BUILTIN_VALUE_TYPES or t in self.classes:
+            return t
         return None
 
     def default_expr(self, t, value, as_type):
@@ -181,6 +195,8 @@ class Gen:
             if v.startswith("NodePath(") and t == "NodePath":
                 return v
             return None
+        if t.startswith("typedarray::") and as_type.startswith("TypedArray<"):
+            return f"{as_type}()"
         if t.startswith("typedarray::") or v in ("[]", "{}") or v.startswith("Array["):
             return "Array()" if t.startswith("typedarray::") or t == "Array" else ("Dictionary()" if t.startswith("typeddictionary::") or t == "Dictionary" else None)
         if t in BUILTIN_VALUE_TYPES:

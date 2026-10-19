@@ -68,6 +68,8 @@ public:
 	// Executes a prepared context and reports script exceptions with file:line.
 	// Returns true if the function ran to completion.
 	bool execute(asIScriptContext *p_ctx);
+	// Like execute(), but returns the asEXECUTION_* status (a suspended context isn't an error).
+	int run(asIScriptContext *p_ctx);
 
 	// Startup cost of registering the Godot API: { "registration_ms", "registration_errors" }.
 	static Dictionary get_startup_stats();

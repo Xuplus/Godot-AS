@@ -1,16 +1,16 @@
 // Port of player.gd from Godot's "Dodge the Creeps" demo (MIT, KidsCanCode / Godot contributors).
 class Player : Area2D
 {
-	[signal] Signal hit;
+	signal hit();
 
 	[export] int speed = 400; // How fast the player will move (pixels/sec).
 	Vector2 screen_size; // Size of the game window.
 
-	AnimatedSprite2D@ sprite;
+	AnimatedSprite2D sprite;
 
 	void _ready() override
 	{
-		@sprite = cast<AnimatedSprite2D>(get_node("AnimatedSprite2D"));
+		sprite = cast<AnimatedSprite2D>(get_node("AnimatedSprite2D"));
 		screen_size = get_viewport_rect().size;
 		hide();
 	}
@@ -62,7 +62,7 @@ class Player : Area2D
 		cast<CollisionShape2D>(get_node("CollisionShape2D")).disabled = false;
 	}
 
-	void _on_body_entered(Node2D@ body)
+	void _on_body_entered(Node2D body)
 	{
 		hide(); // Player disappears after being hit.
 		hit.emit();

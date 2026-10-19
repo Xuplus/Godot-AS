@@ -13,6 +13,7 @@
 
 #include <scriptbuilder/scriptbuilder.h>
 
+#include <algorithm>
 #include <regex>
 
 namespace {
@@ -41,13 +42,19 @@ bool class_inherits(int32_t p_class, const char *p_base) {
 	return false;
 }
 
+// CScriptBuilder keys metadata on GetTypeIdByDecl(name), which for implicit-handle classes (those
+// extending engine classes) is the handle's type id.
+int metadata_type_id(asITypeInfo *p_type) {
+	return p_type->GetTypeId() | ((p_type->GetFlags() & asOBJ_IMPLICIT_HANDLE) ? asTYPEID_OBJHANDLE : 0);
+}
+
 // Metadata for property `p_index` of `p_type`, looked up on the script class that declares it.
 std::vector<std::string> property_metadata(CScriptBuilder &p_builder, asITypeInfo *p_type, int p_index) {
 	asITypeInfo *t = p_type;
 	while (t->GetBaseType() && p_index < (int)t->GetBaseType()->GetPropertyCount()) {
 		t = t->GetBaseType();
 	}
-	return p_builder.GetMetadataForTypeProperty(t->GetTypeId(), p_index);
+	return p_builder.GetMetadataForTypeProperty(metadata_type_id(t), p_index);
 }
 
 Variant zero_value(int p_type_id) {
@@ -124,7 +131,7 @@ ASProject &ASProject::get() {
 ASProject::File ASProject::make_file(const String &p_source) {
 	File f;
 	f.source = p_source;
-	f.processed = asshim::preprocess(p_source, f.info);
+	f.processed = assrc::preprocess(p_source, f.info);
 	return f;
 }
 
@@ -177,21 +184,6 @@ bool ASProject::build_module(const std::map<String, File> &p_files, const String
 	if (r_builder.StartNewModule(engine, module_name.get_data()) < 0) {
 		return false;
 	}
-	std::vector<std::string> bases;
-	std::unordered_set<std::string> used;
-	for (const auto &kv : p_files) {
-		for (const std::string &b : kv.second.info.engine_bases) {
-			if (std::find(bases.begin(), bases.end(), b) == bases.end()) {
-				bases.push_back(b);
-			}
-		}
-		used.insert(kv.second.info.identifiers.begin(), kv.second.info.identifiers.end());
-	}
-	for (const std::string &b : bases) {
-		std::string src = asshim::base_class_source(b, used);
-		std::string section = "<godot>/" + asshim::base_class_name(b);
-		r_builder.AddSectionFromMemory(section.c_str(), src.c_str(), (unsigned int)src.size());
-	}
 	for (const auto &kv : p_files) {
 		CharString path = kv.first.utf8();
 		CharString code = kv.second.processed.utf8();
@@ -206,15 +198,15 @@ bool ASProject::build_module(const std::map<String, File> &p_files, const String
 	return true;
 }
 
-std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file) const {
+std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file, const std::map<String, File> &p_files) const {
 	// The main class is the one named after the file (my_player.as -> MyPlayer), otherwise the
 	// first class in the file that extends an engine class.
 	String wanted = p_path.get_file().get_basename().replace("_", "").to_lower();
 	asITypeInfo *main_type = nullptr;
 	asITypeInfo *first_type = nullptr;
-	for (const asshim::SourceInfo::ClassDecl &decl : p_file.info.classes) {
+	for (const assrc::ClassDecl &decl : p_file.info.classes) {
 		asITypeInfo *t = p_module->GetTypeInfoByName(decl.name.c_str());
-		if (!t || asshim::is_base_class(t) || asshim::engine_base_of(t).empty()) {
+		if (!t || !t->GetNativeBaseType()) {
 			continue;
 		}
 		if (!first_type) {
@@ -237,15 +229,48 @@ std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module
 	cls->type = main_type;
 	main_type->AddRef();
 	cls->path = p_path;
-	cls->native_base = StringName(asshim::engine_base_of(main_type).c_str());
-	cls->tool = has_metadata(p_builder.GetMetadataForType(main_type->GetTypeId()), "tool");
+	cls->native_base = StringName(main_type->GetNativeBaseType()->GetName());
+	cls->tool = has_metadata(p_builder.GetMetadataForType(metadata_type_id(main_type)), "tool");
 
+	// The class chain from the base-most script class to main_type, for ordering `default` statements.
+	std::vector<std::string> chain;
+	for (asITypeInfo *t = main_type; t; t = t->GetBaseType()) {
+		chain.insert(chain.begin(), t->GetName());
+	}
+	struct DefaultStatement {
+		size_t depth;
+		int line;
+		asIScriptFunction *fn;
+	};
+	std::vector<DefaultStatement> defaults;
+	const size_t prefix_len = strlen(assrc::DEFAULT_PREFIX);
 	for (asUINT i = 0; i < main_type->GetMethodCount(); i++) {
 		asIScriptFunction *fn = main_type->GetMethodByIndex(i, false);
-		if (asshim::is_base_class(fn->GetObjectType()) || fn->IsPrivate() || fn->IsProtected()) {
+		const char *fn_name = fn->GetName();
+		if (strncmp(fn_name, assrc::DEFAULT_PREFIX, prefix_len) == 0) {
+			// __default_<Class>_<line>
+			std::string rest = fn_name + prefix_len;
+			size_t sep = rest.rfind('_');
+			std::string class_name = rest.substr(0, sep);
+			size_t depth = std::find(chain.begin(), chain.end(), class_name) - chain.begin();
+			defaults.push_back({ depth, atoi(rest.c_str() + sep + 1), fn });
 			continue;
 		}
-		cls->methods.insert(StringName(fn->GetName()), fn);
+		if (fn->IsPrivate() || fn->IsProtected() || strncmp(fn_name, "__", 2) == 0) {
+			continue;
+		}
+		cls->methods.insert(StringName(fn_name), fn);
+	}
+	std::sort(defaults.begin(), defaults.end(), [](const DefaultStatement &a, const DefaultStatement &b) {
+		return a.depth != b.depth ? a.depth < b.depth : a.line < b.line;
+	});
+	if (!defaults.empty()) {
+		std::vector<asIScriptFunction *> *list = new std::vector<asIScriptFunction *>();
+		for (const DefaultStatement &d : defaults) {
+			d.fn->AddRef();
+			list->push_back(d.fn);
+		}
+		main_type->SetUserData(list, asrt::DEFAULTS_USER_DATA);
 	}
 
 	asIScriptEngine *engine = p_module->GetEngine();
@@ -261,7 +286,31 @@ std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module
 		}
 		std::vector<std::string> meta = property_metadata(p_builder, main_type, (int)i);
 		if (type_id == signal_type_id && has_metadata(meta, "signal")) {
-			cls->signals.push_back({ StringName(name), (int)i });
+			ASCompiledClass::SignalInfo signal;
+			signal.name = StringName(name);
+			signal.index = (int)i;
+			// Arguments from a `signal name(args);` declaration in this class or a script base class.
+			for (const auto &kv : p_files) {
+				for (const assrc::SignalDecl &decl : kv.second.info.signals) {
+					if (decl.name != name || std::find(chain.begin(), chain.end(), decl.class_name) == chain.end()) {
+						continue;
+					}
+					for (const assrc::SignalArg &a : decl.args) {
+						ASCompiledClass::SignalArg arg;
+						arg.name = StringName(a.name.c_str());
+						int arg_type = p_module->GetTypeIdByDecl(a.type.c_str());
+						if (arg_type >= 0) {
+							arg.type = asrt::variant_type(arg_type);
+							asrt::TypeInfo arg_info = asrt::type_info(arg_type);
+							if (arg_info.kind == asrt::TypeKind::Object) {
+								arg.class_name = StringName(asapi::classes[arg_info.class_index].name);
+							}
+						}
+						signal.args.push_back(arg);
+					}
+				}
+			}
+			cls->signals.push_back(signal);
 			continue;
 		}
 		ASCompiledClass::Property p;
@@ -274,7 +323,21 @@ std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module
 		}
 		p.exported = !is_protected && has_metadata(meta, "export");
 		asrt::TypeInfo info = asrt::type_info(type_id);
-		if (info.kind == asrt::TypeKind::Object) {
+		asITypeInfo *as_type = engine->GetTypeInfoById(type_id);
+		if (as_type && (as_type->GetFlags() & asOBJ_TEMPLATE) && strcmp(as_type->GetName(), "TypedArray") == 0) {
+			// The inspector shows a typed array editor: "Node", "int", ...
+			int element = as_type->GetSubTypeId(0);
+			asrt::TypeInfo element_info = asrt::type_info(element);
+			p.hint = PROPERTY_HINT_ARRAY_TYPE;
+			if (element_info.kind == asrt::TypeKind::Object) {
+				p.hint_string = asapi::classes[element_info.class_index].name;
+			} else if (element_info.kind == asrt::TypeKind::Script) {
+				asITypeInfo *native = engine->GetTypeInfoById(element)->GetNativeBaseType();
+				p.hint_string = native ? native->GetName() : "Object";
+			} else if (element_info.kind != asrt::TypeKind::Variant) {
+				p.hint_string = Variant::get_type_name(asrt::variant_type(element));
+			}
+		} else if (info.kind == asrt::TypeKind::Object) {
 			p.class_name = StringName(asapi::classes[info.class_index].name);
 			if (class_inherits(info.class_index, "Resource")) {
 				p.hint = PROPERTY_HINT_RESOURCE_TYPE;
@@ -351,7 +414,7 @@ bool ASProject::publish(asIScriptModule *p_module, CScriptBuilder &p_builder, co
 	handle->module = module;
 	HashMap<String, std::shared_ptr<ASCompiledClass>> new_classes;
 	for (const auto &kv : p_files) {
-		std::shared_ptr<ASCompiledClass> cls = make_class(module, builder, handle, kv.first, kv.second);
+		std::shared_ptr<ASCompiledClass> cls = make_class(module, builder, handle, kv.first, kv.second, p_files);
 		if (cls) {
 			new_classes.insert(kv.first, cls);
 		}
@@ -373,6 +436,16 @@ std::shared_ptr<ASCompiledClass> ASProject::get_class(const String &p_path) cons
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	const std::shared_ptr<ASCompiledClass> *cls = classes.getptr(p_path);
 	return cls ? *cls : nullptr;
+}
+
+String ASProject::get_path_of(const asITypeInfo *p_type) const {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	for (const KeyValue<String, std::shared_ptr<ASCompiledClass>> &kv : classes) {
+		if (kv.value->type == p_type) {
+			return kv.key;
+		}
+	}
+	return String();
 }
 
 uint64_t ASProject::get_generation() const {

@@ -662,6 +662,8 @@ asCScriptEngine::asCScriptEngine()
 
 	shuttingDown = false;
 	inDestructor = false;
+	nativeBaseHandler = 0; // GODOT-AS PATCH (native base classes)
+	methodRefFactory = 0; // GODOT-AS PATCH (method references)
 
 	// Engine properties
 	{
@@ -2625,17 +2627,23 @@ int asCScriptEngine::SetTemplateRestrictions(asCObjectType *templateType, asCScr
 {
 	asASSERT(templateType->flags & asOBJ_TEMPLATE);
 
+	// GODOT-AS PATCH (generic template values): generic-convention functions pass arguments and return
+	// values through asIScriptGeneric, which handles every concrete type, so they may take and return
+	// subtypes by value, for value and reference subtypes alike.
+	bool isGeneric = func->sysFuncIntf &&
+		(func->sysFuncIntf->callConv == ICC_GENERIC_FUNC || func->sysFuncIntf->callConv == ICC_GENERIC_METHOD);
+
 	for (asUINT subTypeIdx = 0; subTypeIdx < templateType->templateSubTypes.GetLength(); subTypeIdx++)
 	{
 		if (func->returnType.GetTypeInfo() == templateType->templateSubTypes[subTypeIdx].GetTypeInfo())
 		{
 			if (func->returnType.IsObjectHandle())
 				templateType->acceptValueSubType = false;
-			else if (!func->returnType.IsReference())
+			else if (!func->returnType.IsReference() && !isGeneric)
 				templateType->acceptRefSubType = false;
 
 			// Can't support template subtypes by value, since each type is treated differently in the ABI
-			if (!func->returnType.IsObjectHandle() && !func->returnType.IsReference())
+			if (!func->returnType.IsObjectHandle() && !func->returnType.IsReference() && !isGeneric)
 				return ConfigError(asNOT_SUPPORTED, caller, templateType->name.AddressOf(), decl);
 		}
 
@@ -2910,6 +2918,74 @@ int asCScriptEngine::RegisterObjectMethod(const char *obj, const char *declarati
 		return ConfigError(asINVALID_TYPE, "RegisterObjectMethod", obj, declaration);
 
 	return RegisterMethodToObjectType(CastToObjectType(dt.GetTypeInfo()), declaration, funcPointer, callConv, auxiliary, compositeOffset, isCompositeIndirect);
+}
+
+// GODOT-AS PATCH (method references)
+int asCScriptEngine::SetMethodReferenceFactory(int funcId)
+{
+	asCScriptFunction *func = funcId > 0 && funcId < (int)scriptFunctions.GetLength() ? scriptFunctions[funcId] : 0;
+	if( func == 0 || func->objectType != 0 || func->parameterTypes.GetLength() != 2 ||
+		!func->parameterTypes[0].IsObjectHandle() ||
+		!func->parameterTypes[1].IsEqualExceptRefAndConst(stringType) ||
+		func->returnType.GetTypeInfo() == 0 || func->returnType.IsObjectHandle() || func->returnType.IsReference() )
+		return asINVALID_ARG;
+	methodRefFactory = funcId;
+	return asSUCCESS;
+}
+
+// GODOT-AS PATCH (registered inheritance)
+int asCScriptEngine::RegisterObjectBaseType(const char *obj, const char *base)
+{
+	if( obj == 0 || base == 0 )
+		return ConfigError(asINVALID_ARG, "RegisterObjectBaseType", obj, base);
+
+	asCObjectType *types[2] = { 0, 0 };
+	const char *names[2] = { obj, base };
+	for( int i = 0; i < 2; i++ )
+	{
+		asCDataType dt;
+		asCBuilder bld(this, 0);
+		int r = bld.ParseDataType(names[i], &dt, defaultNamespace);
+		if( r < 0 )
+			return ConfigError(r, "RegisterObjectBaseType", obj, base);
+		types[i] = CastToObjectType(dt.GetTypeInfo());
+		if( types[i] == 0 ||
+			(dt.IsObjectHandle() && !(types[i]->flags & asOBJ_IMPLICIT_HANDLE)) ||
+			!(types[i]->flags & asOBJ_REF) ||
+			(types[i]->flags & (asOBJ_SCRIPT_OBJECT | asOBJ_TEMPLATE | asOBJ_NOHANDLE | asOBJ_SCOPED)) )
+			return ConfigError(asINVALID_TYPE, "RegisterObjectBaseType", obj, base);
+	}
+
+	asCObjectType *ot = types[0], *bt = types[1];
+	if( ot->derivedFrom != 0 || bt->DerivesFrom(ot) )
+		return ConfigError(asINVALID_ARG, "RegisterObjectBaseType", obj, base);
+
+	ot->derivedFrom = bt;
+	bt->AddRefInternal();
+
+	// Inherit the base's methods, except names the derived type declares itself (C++-style hiding).
+	asUINT ownCount = ot->methods.GetLength();
+	for( asUINT m = 0; m < bt->methods.GetLength(); m++ )
+	{
+		asCScriptFunction *func = scriptFunctions[bt->methods[m]];
+		bool hidden = false;
+		for( asUINT d = 0; d < ownCount; d++ )
+		{
+			asCScriptFunction *own = scriptFunctions[ot->methods[d]];
+			if( own->name.GetLength() == func->name.GetLength() && own->name == func->name )
+			{
+				hidden = true;
+				break;
+			}
+		}
+		if( hidden )
+			continue;
+
+		ot->methods.PushLast(bt->methods[m]);
+		func->AddRefInternal();
+	}
+
+	return asSUCCESS;
 }
 
 // internal

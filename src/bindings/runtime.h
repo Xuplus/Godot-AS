@@ -10,6 +10,12 @@
 
 namespace asrt {
 
+// asITypeInfo user data: the class's `default` statements, a std::vector<asIScriptFunction *>.
+constexpr asPWORD DEFAULTS_USER_DATA = 0x47415344; // "GASD"
+
+// TypedArray<T>, registered before the API that uses it (typed_array.cpp). Returns the error count.
+int register_typed_array(asIScriptEngine *p_engine);
+
 // Registers the whole generated Godot API, plus the hand-written pieces (Variant, string literals,
 // container indexing, script helpers). Returns the number of registration errors.
 int register_api(asIScriptEngine *p_engine);
@@ -50,14 +56,14 @@ GDExtensionObjectPtr script_object_owner(asIScriptObject *p_object);
 // Index into asapi::classes, or -1.
 int32_t find_class(const char *p_name);
 
-// The engine object the next script object constructed on this thread belongs to. The generated
-// script base class constructor takes it, so engine calls work inside user constructors.
+// The engine object the next script object created on this thread belongs to. It's bound before the
+// script constructor runs, so engine calls work inside user constructors.
 void set_pending_owner(GDExtensionObjectPtr p_owner);
 
 // Sets a `Signal` field of a script object to `p_owner`'s signal `p_name`.
 void init_signal(void *p_field, GDExtensionObjectPtr p_owner, const godot::StringName &p_name);
 
-// Drops a script object's reference to its owner (the `__self` field of the generated base class).
+// Drops a script object's reference to its owner (its hidden `__self` property).
 void release_script_owner(asIScriptObject *p_object);
 
 } // namespace asrt

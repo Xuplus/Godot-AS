@@ -1,15 +1,15 @@
 // Port of hud.gd from Godot's "Dodge the Creeps" demo (MIT, KidsCanCode / Godot contributors).
 class HUD : CanvasLayer
 {
-	[signal] Signal start_game;
+	signal start_game();
 
-	Label@ message_label;
-	Timer@ message_timer;
+	Label message_label;
+	Timer message_timer;
 
 	void _ready() override
 	{
-		@message_label = cast<Label>(get_node("MessageLabel"));
-		@message_timer = cast<Timer>(get_node("MessageTimer"));
+		message_label = cast<Label>(get_node("MessageLabel"));
+		message_timer = cast<Timer>(get_node("MessageTimer"));
 	}
 
 	void show_message(const String &in text)
@@ -19,23 +19,16 @@ class HUD : CanvasLayer
 		message_timer.start();
 	}
 
-	// GDScript awaits the message timer and then a one-second timer. AngelScript has no `await`, so
-	// the two waits become one-shot signal connections.
 	void show_game_over()
 	{
 		show_message("Game Over");
-		message_timer.timeout.connect(Callable(this, "_after_game_over_message"), Object::CONNECT_ONE_SHOT);
-	}
+		// Wait until the MessageTimer has counted down.
+		await(message_timer.timeout);
 
-	void _after_game_over_message()
-	{
 		message_label.text = "Dodge the\nCreeps";
 		message_label.show();
-		get_tree().create_timer(1).timeout.connect(Callable(this, "_show_start_button"), Object::CONNECT_ONE_SHOT);
-	}
-
-	void _show_start_button()
-	{
+		// Make a one-shot timer and wait for it to finish.
+		await(get_tree().create_timer(1).timeout);
 		cast<Button>(get_node("StartButton")).show();
 	}
 

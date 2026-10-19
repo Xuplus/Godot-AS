@@ -1,6 +1,6 @@
 #pragma once
 
-#include "bindings/shims.h"
+#include "as_source.h"
 
 #include <godot_cpp/templates/hash_map.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
@@ -37,9 +37,15 @@ struct ASCompiledClass {
 		int hint = 0;
 		String hint_string;
 	};
+	struct SignalArg {
+		StringName name;
+		Variant::Type type = Variant::NIL;
+		StringName class_name;
+	};
 	struct SignalInfo {
 		StringName name;
 		int index = -1; // property index of the Signal field
+		std::vector<SignalArg> args; // from `signal name(args);` declarations
 	};
 
 	std::shared_ptr<ASModuleHandle> module;
@@ -67,7 +73,7 @@ class ASProject {
 	struct File {
 		String source;
 		String processed;
-		asshim::SourceInfo info;
+		assrc::SourceInfo info;
 	};
 
 	mutable std::recursive_mutex mutex;
@@ -83,7 +89,7 @@ class ASProject {
 	static File make_file(const String &p_source);
 	bool build_module(const std::map<String, File> &p_files, const String &p_module_name, asIScriptModule **r_module, class CScriptBuilder &r_builder) const;
 	bool publish(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::map<String, File> &p_files);
-	std::shared_ptr<ASCompiledClass> make_class(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file) const;
+	std::shared_ptr<ASCompiledClass> make_class(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file, const std::map<String, File> &p_files) const;
 
 public:
 	static ASProject &get();
@@ -97,6 +103,8 @@ public:
 	bool ensure_built();
 
 	std::shared_ptr<ASCompiledClass> get_class(const String &p_path) const;
+	// The script path whose main class is `p_type`, or empty.
+	String get_path_of(const asITypeInfo *p_type) const;
 	uint64_t get_generation() const;
 
 	// Compiles everything with `p_source` standing in for `p_path`, without keeping the result.

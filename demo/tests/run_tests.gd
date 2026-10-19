@@ -62,12 +62,50 @@ func _ready() -> void:
 	add_child(api)
 	var hits: Array = []
 	api.connect("hit", func(n): hits.append(n))
-	var api_failures: String = api.call("run")
+	check(api.has_method("run"), "api_test.as compiled")
+	var api_result = api.call("run") if api.has_method("run") else null
+	check(api_result is String, "api_test.as run() completed")
+	var api_failures: String = api_result if api_result is String else ""
 	for line in api_failures.split("
 ", false):
 		check(false, "api_test: " + line)
 	check(api_failures.is_empty(), "api_test.as: generated API from AngelScript")
 	check(hits == [3], "script signal emitted from AngelScript reached GDScript")
+
+	var dialect := Node.new()
+	dialect.set_script(load("res://tests/dialect_test.as"))
+	add_child(dialect)
+	check(dialect.has_method("run"), "dialect_test.as compiled")
+	var dialect_result = dialect.call("run") if dialect.has_method("run") else null
+	check(dialect_result is String, "dialect_test.as run() completed")
+	var dialect_failures: String = dialect_result if dialect_result is String else ""
+	for line in dialect_failures.split("
+", false):
+		check(false, "dialect_test: " + line)
+	check(dialect_failures.is_empty(), "dialect_test.as: Phase 2 language features")
+	var typed_export := false
+	for prop in dialect.get_property_list():
+		if prop.name == "targets":
+			typed_export = prop.type == TYPE_ARRAY and prop.hint == PROPERTY_HINT_ARRAY_TYPE and prop.hint_string == "Node2D"
+	check(typed_export, "exported TypedArray<Node2D> shows as a typed array")
+
+	check(dialect.process_priority == 7, "default statement sets an engine property")
+	var ping_args := []
+	var moved_args := []
+	for sig in dialect.get_script().get_script_signal_list():
+		if sig.name == "ping":
+			ping_args = sig.args
+		elif sig.name == "moved":
+			moved_args = sig.args
+	check(ping_args.size() == 1 and ping_args[0].name == "value" and ping_args[0].type == TYPE_INT, "signal declaration reports its arguments")
+	check(moved_args.size() == 2 and moved_args[0].class_name == &"Node2D" and moved_args[1].type == TYPE_VECTOR2, "signal arguments with engine and builtin types")
+	var started = dialect.call("start_await", "go")
+	check(started == null and dialect.get("await_stage") == 1, "await suspends the script and returns to Godot")
+	dialect.emit_signal("ping", 5)
+	check(dialect.get("await_stage") == 2, "the signal resumes the script")
+	dialect.emit_signal("ping", 7)
+	check(dialect.get("await_stage") == 3 and dialect.get("await_sum") == 12, "nested await, and await returns the signal argument")
+	check(dialect.get("await_label") == "go", "reference arguments survive a suspension")
 
 	print("  (expected) the next error is a deliberate script exception:")
 	from_code.call("crash")

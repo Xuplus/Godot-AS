@@ -211,7 +211,18 @@ TypedArray<Dictionary> AngelScript::_get_script_signal_list() const {
 		for (const ASCompiledClass::SignalInfo &s : cls->signals) {
 			Dictionary d;
 			d["name"] = s.name;
-			d["args"] = Array();
+			Array args;
+			for (const ASCompiledClass::SignalArg &a : s.args) {
+				Dictionary arg;
+				arg["name"] = a.name;
+				arg["type"] = (int)a.type;
+				arg["class_name"] = a.class_name;
+				arg["hint"] = 0;
+				arg["hint_string"] = String();
+				arg["usage"] = PROPERTY_USAGE_DEFAULT;
+				args.push_back(arg);
+			}
+			d["args"] = args;
 			out.push_back(d);
 		}
 	}

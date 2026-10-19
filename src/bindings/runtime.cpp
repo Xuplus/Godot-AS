@@ -7,6 +7,18 @@
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/array.hpp>
+#include <godot_cpp/variant/callable.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
+#include <godot_cpp/variant/packed_color_array.hpp>
+#include <godot_cpp/variant/packed_float32_array.hpp>
+#include <godot_cpp/variant/packed_float64_array.hpp>
+#include <godot_cpp/variant/packed_int32_array.hpp>
+#include <godot_cpp/variant/packed_int64_array.hpp>
+#include <godot_cpp/variant/packed_string_array.hpp>
+#include <godot_cpp/variant/packed_vector2_array.hpp>
+#include <godot_cpp/variant/packed_vector3_array.hpp>
+#include <godot_cpp/variant/packed_vector4_array.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
@@ -415,7 +427,6 @@ void object_factory(asIScriptGeneric *g) {
 	g->SetReturnObject(proxy);
 }
 
-void object_upcast(asIScriptGeneric *g) { g->SetReturnObject(g->GetObject()); }
 
 // Object.free() isn't a MethodBind (Godot special-cases it), so it's bound by hand.
 void object_free(asIScriptGeneric *g) {
@@ -488,18 +499,88 @@ void signal_accessor(asIScriptGeneric *g) {
 	ctor(g->GetAddressOfReturnLocation(), args);
 }
 
-// Script base classes take their owner from here: a self reference that doesn't keep the object alive.
+// `timer.timeout.connect(on_timeout)`: the compiler turns a method name used as a Callable into
+// __method_ref(object, "on_timeout") (an AngelScript patch); the result is Callable(object, name).
+void method_ref(asIScriptGeneric *g) {
+	ASObjectProxy *proxy = static_cast<ASObjectProxy *>(g->GetArgObject(0));
+	GDExtensionObjectPtr self = asproxy::object_or_throw(proxy);
+	memnew_placement(g->GetAddressOfReturnLocation(), Callable);
+	if (!self) {
+		return;
+	}
+	static GDExtensionPtrConstructor ctor = gdextension_interface::variant_get_ptr_constructor(GDEXTENSION_VARIANT_TYPE_CALLABLE, 2);
+	StringName method(*static_cast<const String *>(g->GetArgAddress(1)));
+	const void *args[] = { &self, &method };
+	((Callable *)g->GetAddressOfReturnLocation())->~Callable();
+	ctor(g->GetAddressOfReturnLocation(), args);
+}
+
+// Script classes that extend an engine class take their owner from here when they're created.
 thread_local GDExtensionObjectPtr pending_owner = nullptr;
 
-void take_owner(asIScriptGeneric *g) {
-	void **out = (void **)g->GetArgAddress(0);
-	*out = nullptr;
-	GDExtensionObjectPtr owner = pending_owner;
-	pending_owner = nullptr;
-	if (owner) {
+// Script classes inherit engine classes through an AngelScript patch (asINativeBaseHandler). Their
+// hidden first property, `__self`, is a handle to the engine object: a self reference that doesn't
+// keep the object alive, since the engine object owns the script instance.
+class NativeBaseHandler : public asINativeBaseHandler {
+public:
+	bool CanInheritFrom(asITypeInfo *p_type) override {
+		TypeInfo info = type_info(p_type->GetTypeId());
+		return info.kind == TypeKind::Object && !(classes[info.class_index].flags & CF_SINGLETON);
+	}
+
+	void OnScriptObjectCreated(asIScriptObject *p_object, asITypeInfo *p_native_base) override {
+		GDExtensionObjectPtr owner = pending_owner;
+		pending_owner = nullptr;
+		if (!owner) {
+			owner = AngelScriptInstance::construct_owner(p_object, p_native_base); // `Player()` in a script
+		}
+		if (!owner) {
+			return;
+		}
 		ASObjectProxy *proxy = asproxy::get(owner);
 		asproxy::add_self_ref(proxy);
-		*out = proxy;
+		*static_cast<ASObjectProxy **>(p_object->GetAddressOfProperty(0)) = proxy;
+		apply_defaults(p_object);
+	}
+
+	// `default z_index = 5;` statements, base classes first, before the script constructor.
+	static void apply_defaults(asIScriptObject *p_object) {
+		auto *defaults = static_cast<std::vector<asIScriptFunction *> *>(p_object->GetObjectType()->GetUserData(DEFAULTS_USER_DATA));
+		if (!defaults) {
+			return;
+		}
+		AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
+		for (asIScriptFunction *fn : *defaults) {
+			asIScriptContext *ctx = lang->acquire_context();
+			ctx->Prepare(fn);
+			ctx->SetObject(p_object);
+			lang->execute(ctx);
+			lang->release_context(ctx);
+		}
+	}
+
+	bool HasVirtualMethod(asITypeInfo *p_native_base, const char *p_name) override {
+		TypeInfo info = type_info(p_native_base->GetTypeId());
+		for (int32_t k = info.class_index; k >= 0; k = classes[k].parent) {
+			for (uint32_t mi = classes[k].method_begin; mi < classes[k].method_end; mi++) {
+				if ((methods[mi].flags & MF_VIRTUAL) && strcmp(methods[mi].as_name, p_name) == 0) {
+					return true;
+				}
+			}
+		}
+		return false;
+	}
+};
+
+NativeBaseHandler native_base_handler;
+
+void free_defaults(asITypeInfo *p_type) {
+	auto *defaults = static_cast<std::vector<asIScriptFunction *> *>(p_type->GetUserData(DEFAULTS_USER_DATA));
+	if (defaults) {
+		for (asIScriptFunction *fn : *defaults) {
+			fn->Release();
+		}
+		delete defaults;
 	}
 }
 
@@ -605,6 +686,11 @@ void builtin_constant_init(const Builtin &p_builtin, const BuiltinConstant &p_co
 // --- container indexing ---------------------------------------------------------------------------------------
 
 void index_out_of_range() { asGetActiveContext()->SetException("Index out of range"); }
+
+void for_begin(asIScriptGeneric *g) { g->SetReturnQWord(0); }
+void for_next(asIScriptGeneric *g) { g->SetReturnQWord(g->GetArgQWord(0) + 1); }
+template <typename T>
+void for_end(asIScriptGeneric *g) { g->SetReturnByte((int64_t)g->GetArgQWord(0) >= static_cast<const T *>(g->GetObject())->size()); }
 
 void array_index(asIScriptGeneric *g) {
 	void *r = gdextension_interface::array_operator_index(g->GetObject(), (GDExtensionInt)g->GetArgQWord(0));
@@ -803,7 +889,7 @@ void register_object_types(asIScriptEngine *e) {
 	singleton_objects.assign(class_count, nullptr);
 	for (uint32_t i = 0; i < class_count; i++) {
 		const Class &c = classes[i];
-		int r = e->RegisterObjectType(c.name, 0, asOBJ_REF);
+		int r = e->RegisterObjectType(c.name, 0, asOBJ_REF | asOBJ_IMPLICIT_HANDLE);
 		count_error(r, "class", c.name);
 		if (r < 0) {
 			continue;
@@ -813,7 +899,8 @@ void register_object_types(asIScriptEngine *e) {
 		info.kind = TypeKind::Object;
 		info.class_tag = gdextension_interface::classdb_get_class_tag(name._native_ptr());
 		info.class_index = (int32_t)i;
-		type_registry[r] = info;
+		// Implicit-handle types report the handle's type id; the registry is keyed on the bare type.
+		type_registry[r & ~(asTYPEID_OBJHANDLE | asTYPEID_HANDLETOCONST)] = info;
 		class_lookup[c.name] = (int32_t)i;
 		e->RegisterObjectBehaviour(c.name, asBEHAVE_ADDREF, "void f()", asFUNCTION(object_addref), asCALL_GENERIC);
 		e->RegisterObjectBehaviour(c.name, asBEHAVE_RELEASE, "void f()", asFUNCTION(object_release), asCALL_GENERIC);
@@ -927,7 +1014,34 @@ void register_indexers(asIScriptEngine *e) {
 	for (const PackedIndexer &p : packed) {
 		std::string decl = std::string(p.element) + " &opIndex(int64)";
 		count_error(e->RegisterObjectMethod(p.type, decl.c_str(), asFUNCTION(p.fn), asCALL_GENERIC), "indexer", p.type);
+		std::string value = std::string(p.element) + " &opForValue(int64)";
+		count_error(e->RegisterObjectMethod(p.type, value.c_str(), asFUNCTION(p.fn), asCALL_GENERIC), "iterator", p.type);
 	}
+
+	// foreach (Variant v : array), foreach (Vector2 p : points)
+	struct Iterable {
+		const char *type;
+		asGENFUNC_t end;
+	};
+	const Iterable iterable[] = {
+		{ "Array", for_end<Array> },
+		{ "PackedByteArray", for_end<PackedByteArray> },
+		{ "PackedInt32Array", for_end<PackedInt32Array> },
+		{ "PackedInt64Array", for_end<PackedInt64Array> },
+		{ "PackedFloat32Array", for_end<PackedFloat32Array> },
+		{ "PackedFloat64Array", for_end<PackedFloat64Array> },
+		{ "PackedStringArray", for_end<PackedStringArray> },
+		{ "PackedVector2Array", for_end<PackedVector2Array> },
+		{ "PackedVector3Array", for_end<PackedVector3Array> },
+		{ "PackedVector4Array", for_end<PackedVector4Array> },
+		{ "PackedColorArray", for_end<PackedColorArray> },
+	};
+	for (const Iterable &it : iterable) {
+		count_error(e->RegisterObjectMethod(it.type, "int64 opForBegin() const", asFUNCTION(for_begin), asCALL_GENERIC), "iterator", it.type);
+		count_error(e->RegisterObjectMethod(it.type, "bool opForEnd(int64) const", asFUNCTION(it.end), asCALL_GENERIC), "iterator", it.type);
+		count_error(e->RegisterObjectMethod(it.type, "int64 opForNext(int64) const", asFUNCTION(for_next), asCALL_GENERIC), "iterator", it.type);
+	}
+	count_error(e->RegisterObjectMethod("Array", "Variant &opForValue(int64)", asFUNCTION(array_index), asCALL_GENERIC), "iterator", "Array");
 }
 
 void register_variant(asIScriptEngine *e) {
@@ -979,9 +1093,10 @@ void register_class_members(asIScriptEngine *e, int &r_methods) {
 			chain.push_back(k);
 		}
 
-		// Instance methods, own and inherited (stock AngelScript has no inheritance for registered
-		// types). The chain runs from the class itself to Object, so a redefinition in a subclass is
-		// seen first and shadows the parent's method of the same name.
+		// Instance methods. Each class registers only its own; inherited ones come from
+		// RegisterObjectBaseType (an AngelScript patch) in register_inheritance(). Names are still
+		// collected over the whole chain, from the class itself up to Object, so that a redefinition
+		// in a subclass shadows the parent's method and signal accessors don't collide with methods.
 		names.clear();
 		properties.clear();
 		for (int32_t k : chain) {
@@ -997,13 +1112,16 @@ void register_class_members(asIScriptEngine *e, int &r_methods) {
 				if (!names.emplace(m.as_name, true).second) {
 					continue;
 				}
+				if (m.flags & MF_PROPERTY) {
+					properties.emplace(m.as_name + 4, true);
+				}
+				if (k != (int32_t)ci) {
+					continue;
+				}
 				int r = -1;
 				if (m.flags & MF_PROPERTY) {
 					std::string decl = std::string(m.decl) + " property";
 					r = e->RegisterObjectMethod(c.name, decl.c_str(), asFUNCTION(thunk_object_method), asCALL_GENERIC, &m);
-					if (r >= 0) {
-						properties.emplace(m.as_name + 4, true);
-					}
 				}
 				if (r < 0) {
 					r = e->RegisterObjectMethod(c.name, m.decl, asFUNCTION(thunk_object_method), asCALL_GENERIC, &m);
@@ -1025,21 +1143,22 @@ void register_class_members(asIScriptEngine *e, int &r_methods) {
 					continue;
 				}
 				names.emplace(getter, true);
+				if (k != (int32_t)ci) {
+					continue;
+				}
 				std::string decl = "Signal " + getter + "() const property";
 				e->RegisterObjectMethod(c.name, decl.c_str(), asFUNCTION(signal_accessor), asCALL_GENERIC, (void *)signals[si]);
 			}
 		}
 
-		// Conversions: implicit upcasts to every ancestor, cast<T>() to anything, implicit Variant.
-		for (size_t k = 1; k < chain.size(); k++) {
-			std::string decl = std::string(classes[chain[k]].name) + "@ opImplCast()";
-			count_error(e->RegisterObjectMethod(c.name, decl.c_str(), asFUNCTION(object_upcast), asCALL_GENERIC), "cast", decl.c_str());
+		// Object's conversions, inherited by every class: cast<T>() to anything, implicit Variant.
+		if (c.parent < 0) {
+			e->RegisterObjectMethod(c.name, "void opCast(?&out)", asFUNCTION(object_cast), asCALL_GENERIC);
+			if (!names.count("free")) {
+				e->RegisterObjectMethod(c.name, "void free()", asFUNCTION(object_free), asCALL_GENERIC);
+			}
+			e->RegisterObjectMethod(c.name, "Variant opImplConv() const", asFUNCTION(object_to_variant), asCALL_GENERIC);
 		}
-		e->RegisterObjectMethod(c.name, "void opCast(?&out)", asFUNCTION(object_cast), asCALL_GENERIC);
-		if (!names.count("free")) {
-			e->RegisterObjectMethod(c.name, "void free()", asFUNCTION(object_free), asCALL_GENERIC);
-		}
-		e->RegisterObjectMethod(c.name, "Variant opImplConv() const", asFUNCTION(object_to_variant), asCALL_GENERIC);
 
 		if (c.flags & CF_INSTANTIABLE) {
 			std::string decl = std::string(c.name) + "@ f()";
@@ -1077,6 +1196,20 @@ void register_class_members(asIScriptEngine *e, int &r_methods) {
 		}
 		e->SetDefaultNamespace("");
 	}
+}
+
+// Bases before derived classes: a derived class copies its base's method list, inherited ones included.
+void register_inheritance(asIScriptEngine *e, std::vector<uint8_t> &r_done, int32_t p_class) {
+	if (r_done[p_class]) {
+		return;
+	}
+	r_done[p_class] = 1;
+	const Class &c = classes[p_class];
+	if (c.parent < 0 || (c.flags & CF_SINGLETON)) {
+		return;
+	}
+	register_inheritance(e, r_done, c.parent);
+	count_error(e->RegisterObjectBaseType(c.name, classes[c.parent].name), "base class", c.name);
 }
 
 void register_utilities(asIScriptEngine *e) {
@@ -1121,6 +1254,8 @@ int register_api(asIScriptEngine *p_engine) {
 	for (uint32_t i = 0; i < builtin_count; i++) {
 		register_enums(p_engine, builtins[i].enum_begin, builtins[i].enum_end);
 	}
+	// Before anything declares a TypedArray<X>: template instances copy the methods registered so far.
+	registration_errors += register_typed_array(p_engine);
 	register_builtin_members(p_engine);
 	register_string_extras(p_engine);
 	register_indexers(p_engine);
@@ -1128,8 +1263,17 @@ int register_api(asIScriptEngine *p_engine) {
 	p_engine->RegisterObjectMethod("String", "String opAdd(const Variant &in) const", asFUNCTION(string_add_variant), asCALL_GENERIC);
 	int method_count = 0;
 	register_class_members(p_engine, method_count);
+	std::vector<uint8_t> inheritance_done(class_count, 0);
+	for (uint32_t i = 0; i < class_count; i++) {
+		register_inheritance(p_engine, inheritance_done, (int32_t)i);
+	}
 	register_utilities(p_engine);
-	count_error(p_engine->RegisterGlobalFunction("void __take_owner(?&out)", asFUNCTION(take_owner), asCALL_GENERIC), "function", "__take_owner");
+	p_engine->SetNativeBaseHandler(&native_base_handler);
+	p_engine->SetTypeInfoUserDataCleanupCallback(free_defaults, DEFAULTS_USER_DATA);
+	count_error(p_engine->RegisterGlobalFunction("Variant await(const Signal &in)", asFUNCTION(AngelScriptInstance::script_await), asCALL_GENERIC), "function", "await");
+	int method_ref_id = p_engine->RegisterGlobalFunction("Callable __method_ref(Object@, const String &in)", asFUNCTION(method_ref), asCALL_GENERIC);
+	count_error(method_ref_id, "function", "__method_ref");
+	count_error(p_engine->SetMethodReferenceFactory(method_ref_id), "method reference factory", "__method_ref");
 
 	// GDScript's built-in constants (they aren't part of the engine API).
 	static const double math_pi = 3.14159265358979323846;
@@ -1158,7 +1302,10 @@ TypeInfo type_info(int p_type_id) {
 	TypeInfo info;
 	if (engine) {
 		asITypeInfo *t = engine->GetTypeInfoById(base);
-		if (t && (t->GetFlags() & asOBJ_SCRIPT_OBJECT)) {
+		if (t && (t->GetFlags() & asOBJ_TEMPLATE) && strcmp(t->GetName(), "TypedArray") == 0) {
+			info.kind = TypeKind::Builtin; // same memory as Array
+			info.vtype = GDEXTENSION_VARIANT_TYPE_ARRAY;
+		} else if (t && (t->GetFlags() & asOBJ_SCRIPT_OBJECT)) {
 			info.kind = TypeKind::Script;
 		} else if (t && (t->GetFlags() & asOBJ_ENUM)) {
 			info.kind = TypeKind::Primitive;

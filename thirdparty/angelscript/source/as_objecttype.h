@@ -102,6 +102,8 @@ class asCObjectType : public asCTypeInfo
 {
 public:
 	asITypeInfo       *GetBaseType() const;
+	asITypeInfo       *GetNativeBaseType() const { return GetNativeBase(); } // GODOT-AS PATCH (native base classes)
+	asCObjectType     *GetNativeBase() const; // GODOT-AS PATCH (native base classes)
 	bool               DerivesFrom(const asITypeInfo *objType) const;
 	int                GetSubTypeId(asUINT subtypeIndex = 0) const;
 	asITypeInfo       *GetSubType(asUINT subtypeIndex = 0) const;
@@ -146,6 +148,7 @@ public:
 	asCArray<asCObjectType*>     interfaces;
 	asCArray<asUINT>             interfaceVFTOffsets;
 	asCObjectType *              derivedFrom;
+	asCObjectType *              nativeBase; // GODOT-AS PATCH (native base classes): registered base of a script class
 	asCArray<asCScriptFunction*> virtualFunctionTable;
 
 	// Used for funcdefs declared as members of class.

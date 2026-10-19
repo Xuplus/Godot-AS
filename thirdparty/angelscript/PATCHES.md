@@ -2,11 +2,14 @@
 
 The sources here are AngelScript 2.38.0 from angelcode.com, with the changes below. Every change is
 marked with a `GODOT-AS PATCH` comment in the source, so it can be found and re-applied when
-updating to a newer AngelScript release.
+updating to a newer AngelScript release. The comment names the patch, e.g.
+`GODOT-AS PATCH (native base classes)`.
 
-All three fix linear searches in the registration path. Godot's API registers about 155,000
-methods (stock AngelScript has no inheritance for registered types, so every class gets its
-inherited methods too), and these searches made registration quadratic.
+## Performance (no behavior change)
+
+These fix linear searches in the registration path. They mattered most before registered
+inheritance (below), when every class registered all its inherited methods (~155,000 methods); they
+still help with the ~18,000 that remain.
 
 | Change | File | Effect |
 |---|---|---|
@@ -14,4 +17,73 @@ inherited methods too), and these searches made registration quadratic.
 | `CheckNameConflictMember`: iterate the type's methods in place (it copied the array on every call) and compare accessor names without allocating a substring. `CheckNameConflict`: look up `get_<name>`/`set_<name>` in the symbol table instead of scanning all global functions. | `source/as_builder.cpp` | About 0.4 s less |
 | `FindNameSpace`: map lookup (`nameSpaceLookup`) instead of a linear search over all namespaces. Every engine class has a namespace for its enums and constants, so this ran ~1,000 string compares per registered method. | `source/as_scriptengine.cpp`, `as_scriptengine.h` | About 0.5 s less |
 
-These are good candidates to send upstream; none of them changes behavior.
+These are good candidates to send upstream.
+
+## Registered inheritance
+
+`asIScriptEngine::RegisterObjectBaseType(obj, base)` makes a registered reference type derive from
+another registered reference type. It sets the type's `derivedFrom` and copies the base's method ids
+into the derived type, except names the derived type declares itself (C++-style hiding), adding a
+reference to each copied function. The compiler's existing inheritance checks (`DerivesFrom`) then
+give implicit handle upcasts for free.
+
+Files: `include/angelscript.h`, `source/as_scriptengine.cpp`, `as_scriptengine.h`.
+
+Effect: each Godot class registers only its own methods. Registration takes about 0.3 s instead of
+2 s, and the opImplCast-per-ancestor methods are gone.
+
+## Native base classes
+
+Lets a script class inherit from a registered reference type: `class Player : CharacterBody2D`. The
+application opts in with `asIScriptEngine::SetNativeBaseHandler(asINativeBaseHandler*)`. The handler
+decides which types can be inherited, binds the native object when a script object is created, and
+answers whether the native type has a virtual method of a given name.
+
+| Piece | File |
+|---|---|
+| `asINativeBaseHandler`, `SetNativeBaseHandler`, `asITypeInfo::GetNativeBaseType` | `include/angelscript.h` |
+| `asCObjectType::nativeBase` (the registered base, released with the type) and `GetNativeBase()` (walks script bases) | `source/as_objecttype.h`, `as_objecttype.cpp`, `as_typeinfo.h` |
+| `nativeBaseHandler` on the engine | `source/as_scriptengine.h`, `as_scriptengine.cpp` |
+| `DetermineTypeRelations`: accept a registered type as the base when the handler allows it; such classes (and their script subclasses) get `asOBJ_IMPLICIT_HANDLE` | `source/as_builder.cpp` |
+| `CompileClasses`: the class gets a hidden protected handle property `__self` of the native type as property 0 | `source/as_builder.cpp` |
+| Override validation: `override` is accepted when the handler reports a native virtual of that name | `source/as_builder.cpp` |
+| `asCScriptObject` constructor: calls `OnScriptObjectCreated` after member memory is zeroed, before the script constructor runs | `source/as_scriptobject.cpp` |
+| Compiler: `SymbolLookupMember` falls back to the native base; `GetNativeBaseForMember` and `CompileNativeSelfAccess` compile a native member access as `expr.__self.member`; hooked into implicit-this variable access (`CompileVariableAccess`), implicit-this calls (`CompileFunctionCall`), `.` member access and `.` method calls (`CompileExpressionPostOp`), and conversions (`ImplicitConvObjectToObject`: a script object converts to whatever its native object converts to, unless the class declares its own conversion to that type) | `source/as_compiler.cpp`, `as_compiler.h` |
+
+The `__self` handle is marked ref-safe, so calls through it don't copy the handle into a temporary:
+the native object owns the script object and outlives every use of it.
+
+Not covered yet: saving and loading bytecode (`as_restore.cpp`) doesn't store `nativeBase`; shared
+classes can't have a native base.
+
+## Method references
+
+`asIScriptEngine::SetMethodReferenceFactory(funcId)` names a registered global function
+`T f(Obj@, const string &in)`. Where an expression names a method of an object (`on_timeout`,
+`node.queue_free`) and a `T` is expected, the compiler emits `f(object, "method")` instead of
+reporting "Can't pass class method as arg directly". Only public methods qualify, and the name is
+checked at compile time. Godot-AS uses it for `Callable(object, "method")`, so
+`timer.timeout.connect(on_timeout)` works.
+
+Files: `include/angelscript.h`, `source/as_scriptengine.cpp`, `as_scriptengine.h`, and
+`source/as_compiler.cpp`, `as_compiler.h` (`ImplicitConversion` → `ImplicitConvMethodToReference`).
+
+## Template subtypes by value in generic functions
+
+`SetTemplateRestrictions` rejects template methods that take or return the subtype by value
+(`T get_opIndex(int64)`), because native calling conventions pass each concrete type differently.
+Generic-convention functions go through `asIScriptGeneric`, which handles any concrete type, so the
+restriction is skipped for them and doesn't stop reference subtypes either. `TypedArray<T>` relies
+on it: its elements live as Variants, so it can't hand out references to a `T`.
+
+File: `source/as_scriptengine.cpp`.
+
+## foreach over value types (bug fix)
+
+`CompileForEachStatement` stores the range in a local variable and reads it through a pointer
+(`PshVPtr`). A value-type range could be allocated inline in the stack frame, so the loop read the
+object's first bytes as a pointer and crashed. The range variable is now forced onto the heap for
+value types. Stock add-ons only iterate reference types (`array<T>`), which is why this went
+unnoticed; it's a candidate to send upstream.
+
+File: `source/as_compiler.cpp`.

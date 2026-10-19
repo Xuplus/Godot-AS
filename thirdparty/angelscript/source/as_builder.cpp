@@ -3391,6 +3391,27 @@ void asCBuilder::DetermineTypeRelations()
 				{
 					AddInterfaceFromMixinToClass(decl, node, mixin);
 				}
+				// GODOT-AS PATCH (native base classes): a script class inheriting from a registered type
+				else if (!(objType->flags & asOBJ_SCRIPT_OBJECT) && engine->nativeBaseHandler &&
+					(objType->flags & asOBJ_REF) && !(objType->flags & (asOBJ_NOHANDLE | asOBJ_SCOPED | asOBJ_TEMPLATE | asOBJ_NOINHERIT)) &&
+					!decl->isExistingShared && !decl->typeInfo->IsShared() &&
+					engine->nativeBaseHandler->CanInheritFrom(objType))
+				{
+					asCObjectType *ot = CastToObjectType(decl->typeInfo);
+					if (ot->derivedFrom != 0 || ot->nativeBase != 0)
+					{
+						if (!multipleInheritance)
+						{
+							WriteError(TXT_CANNOT_INHERIT_FROM_MULTIPLE_CLASSES, file, node);
+							multipleInheritance = true;
+						}
+					}
+					else
+					{
+						ot->nativeBase = objType;
+						objType->AddRefInternal();
+					}
+				}
 				else if (!(objType->flags & asOBJ_SCRIPT_OBJECT) ||
 					(objType->flags & asOBJ_NOINHERIT))
 				{
@@ -3471,6 +3492,15 @@ void asCBuilder::DetermineTypeRelations()
 			node = node->next;
 		}
 	}
+
+	// GODOT-AS PATCH (native base classes): classes with a native base, directly or through a script
+	// base, are handles like the native type itself: `Player p` declares a handle
+	for (asUINT n = 0; n < classDeclarations.GetLength(); n++)
+	{
+		asCObjectType *ot = CastToObjectType(classDeclarations[n]->typeInfo);
+		if (ot && ot->GetNativeBase())
+			ot->flags |= asOBJ_IMPLICIT_HANDLE;
+	}
 }
 
 // numTempl is the number of template instances that existed in the engine before the build begun
@@ -3526,6 +3556,13 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 
 		// Methods included from mixin classes should take precedence over inherited methods
 		IncludeMethodsFromMixins(decl);
+
+		// GODOT-AS PATCH (native base classes): the hidden handle to the native object is property 0
+		if( !decl->isExistingShared && ot->nativeBase )
+		{
+			asCDataType selfType = asCDataType::CreateObjectHandle(ot->nativeBase, false);
+			AddPropertyToClass(decl, "__self", selfType, false, true, false);
+		}
 
 		// Add all properties and methods from the base class
 		if( !decl->isExistingShared && ot->derivedFrom )
@@ -3829,6 +3866,12 @@ void asCBuilder::CompileClasses(asUINT numTempl)
 
 		for( asUINT j = 0; j < overrideValidations.GetLength(); j++ )
 		{
+			// GODOT-AS PATCH (native base classes): also accept overrides of the native type's virtual methods
+			asCObjectType *nativeBase = ot->GetNativeBase();
+			if( !overrideValidations[j] && nativeBase && engine->nativeBaseHandler &&
+				engine->nativeBaseHandler->HasVirtualMethod(nativeBase, ot->GetMethodByIndex(j, false)->GetName()) )
+				continue;
+
 			if( !overrideValidations[j] && (!hasBaseClass || !DoesMethodExist(ot->derivedFrom, ot->methods[j])) )
 			{
 				asCString msg;

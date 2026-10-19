@@ -105,6 +105,9 @@ public:
 	virtual int            RegisterObjectProperty(const char *obj, const char *declaration, int byteOffset, int compositeOffset = 0, bool isCompositeIndirect = false);
 	virtual int            RegisterObjectMethod(const char *obj, const char *declaration, const asSFuncPtr &funcPointer, asDWORD callConv, void *auxiliary = 0, int compositeOffset = 0, bool isCompositeIndirect = false);
 	virtual int            RegisterObjectBehaviour(const char *obj, asEBehaviours behaviour, const char *declaration, const asSFuncPtr &funcPointer, asDWORD callConv, void *auxiliary = 0, int compositeOffset = 0, bool isCompositeIndirect = false);
+	virtual int            RegisterObjectBaseType(const char *obj, const char *base); // GODOT-AS PATCH (registered inheritance)
+	virtual void           SetNativeBaseHandler(asINativeBaseHandler *handler) { nativeBaseHandler = handler; } // GODOT-AS PATCH (native base classes)
+	virtual int            SetMethodReferenceFactory(int funcId); // GODOT-AS PATCH (method references)
 	virtual int            RegisterInterface(const char *name);
 	virtual int            RegisterInterfaceMethod(const char *intf, const char *declaration);
 	virtual asUINT         GetObjectTypeCount() const;
@@ -460,6 +463,8 @@ public:
 	// only deleted once the engine is destroyed
 	asCArray<asSNameSpace*> nameSpaces;
 	asCMap<asCString, asSNameSpace*> nameSpaceLookup; // GODOT-AS PATCH (perf): index for FindNameSpace
+	asINativeBaseHandler *nativeBaseHandler; // GODOT-AS PATCH (native base classes)
+	int methodRefFactory; // GODOT-AS PATCH (method references)
 
 	// Callbacks for context pooling
 	asREQUESTCONTEXTFUNC_t  requestCtxFunc;

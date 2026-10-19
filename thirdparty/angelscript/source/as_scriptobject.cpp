@@ -388,6 +388,14 @@ asCScriptObject::asCScriptObject(asCObjectType *ot, bool doInitialize)
 			}
 		}
 	}
+
+	// GODOT-AS PATCH (native base classes): bind the native object before the constructor runs
+	if( doInitialize && objType->engine->nativeBaseHandler )
+	{
+		asCObjectType *nativeBase = objType->GetNativeBase();
+		if( nativeBase )
+			objType->engine->nativeBaseHandler->OnScriptObjectCreated(this, nativeBase);
+	}
 }
 
 void asCScriptObject::Destruct()

@@ -69,6 +69,8 @@ void AngelScriptLanguage::ensure_engine() {
 	}
 	engine = asCreateScriptEngine();
 	engine->SetMessageCallback(asFUNCTION(message_callback), this, asCALL_CDECL);
+	// Engine classes are implicit handles: `Node n = get_node("x");` without `@`.
+	engine->SetEngineProperty(asEP_ALLOW_IMPLICIT_HANDLE_TYPES, true);
 	uint64_t start = Time::get_singleton()->get_ticks_usec();
 	registration_errors = asrt::register_api(engine);
 	registration_ms = (Time::get_singleton()->get_ticks_usec() - start) / 1000.0;
@@ -96,9 +98,13 @@ void AngelScriptLanguage::release_context(asIScriptContext *p_ctx) {
 }
 
 bool AngelScriptLanguage::execute(asIScriptContext *p_ctx) {
+	return run(p_ctx) == asEXECUTION_FINISHED;
+}
+
+int AngelScriptLanguage::run(asIScriptContext *p_ctx) {
 	int r = p_ctx->Execute();
-	if (r == asEXECUTION_FINISHED) {
-		return true;
+	if (r == asEXECUTION_FINISHED || r == asEXECUTION_SUSPENDED) {
+		return r;
 	}
 	if (r == asEXECUTION_EXCEPTION) {
 		const char *section = nullptr;
@@ -107,10 +113,10 @@ bool AngelScriptLanguage::execute(asIScriptContext *p_ctx) {
 		const asIScriptFunction *fn = p_ctx->GetExceptionFunction();
 		String msg = vformat("Script exception: %s (in %s)", String::utf8(p_ctx->GetExceptionString()), String::utf8(fn ? fn->GetDeclaration(true, true) : "?"));
 		_err_print_error(fn ? fn->GetName() : "?", section ? section : "?", line, msg);
-	} else {
+	} else if (r != asEXECUTION_ABORTED) {
 		ERR_PRINT(vformat("AngelScript execution did not finish (code %d).", r));
 	}
-	return false;
+	return r;
 }
 
 // --- Scripts --------------------------------------------------------------------------------------
@@ -168,11 +174,11 @@ void AngelScriptLanguage::_finish() {
 
 PackedStringArray AngelScriptLanguage::_get_reserved_words() const {
 	static const char *words[] = {
-		"and", "abstract", "auto", "bool", "break", "case", "cast", "catch", "class", "const", "continue",
+		"and", "abstract", "auto", "await", "bool", "break", "case", "cast", "catch", "class", "const", "continue",
 		"default", "do", "double", "else", "enum", "explicit", "external", "false", "final", "float", "for",
 		"foreach", "from", "funcdef", "function", "get", "if", "import", "in", "inout", "int", "interface",
 		"int8", "int16", "int32", "int64", "is", "mixin", "namespace", "not", "null", "or", "out", "override",
-		"private", "property", "protected", "return", "set", "shared", "super", "switch", "this", "true",
+		"private", "property", "protected", "return", "set", "shared", "signal", "super", "switch", "this", "true",
 		"try", "typedef", "uint", "uint8", "uint16", "uint32", "uint64", "void", "while", "xor",
 	};
 	PackedStringArray out;
@@ -183,7 +189,7 @@ PackedStringArray AngelScriptLanguage::_get_reserved_words() const {
 }
 
 bool AngelScriptLanguage::_is_control_flow_keyword(const String &p_keyword) const {
-	static const char *words[] = { "break", "case", "catch", "continue", "default", "do", "else", "for", "foreach", "if", "return", "switch", "try", "while" };
+	static const char *words[] = { "await", "break", "case", "catch", "continue", "default", "do", "else", "for", "foreach", "if", "return", "switch", "try", "while" };
 	for (const char *w : words) {
 		if (p_keyword == w) {
 			return true;

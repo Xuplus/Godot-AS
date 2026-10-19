@@ -4,16 +4,24 @@ AngelScript as a scripting language for Godot 4, in the spirit of
 [UnrealEngine-Angelscript](https://angelscript.hazelight.se/): attach `.as` scripts to nodes,
 call the typed Godot API, iterate fast.
 
-Delivered as a GDExtension (no engine fork). Status: **Phase 1 done**. The whole Godot API is
-bound, and Godot's "Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
-[docs/phase1.md](docs/phase1.md) for what works and the numbers, and
-[docs/phase0.md](docs/phase0.md) for the spike.
+Delivered as a GDExtension (no engine fork). Status: **Phase 2 done**. The whole Godot API is
+bound, script classes extend engine classes directly, and Godot's "Dodge the Creeps" demo runs
+ported to AngelScript (`demo/dodge/`). See [docs/phase2.md](docs/phase2.md) for the language,
+[docs/phase1.md](docs/phase1.md) for the bindings, and [docs/phase0.md](docs/phase0.md) for the spike.
 
 ```angelscript
 class Player : Area2D
 {
-	[signal] Signal hit;
+	signal hit();
 	[export] int speed = 400;
+
+	AnimatedSprite2D sprite;
+
+	void _ready() override
+	{
+		sprite = cast<AnimatedSprite2D>(get_node("AnimatedSprite2D"));
+		body_entered.connect(_on_body_entered);
+	}
 
 	void _process(double delta) override
 	{
@@ -21,11 +29,11 @@ class Player : Area2D
 		if (Input::is_action_pressed("move_right"))
 			velocity.x += 1;
 		if (velocity.length() > 0)
-			cast<AnimatedSprite2D>(get_node("AnimatedSprite2D")).play();
+			sprite.play();
 		position = position + velocity.normalized() * speed * delta;
 	}
 
-	void _on_body_entered(Node2D@ body)
+	void _on_body_entered(Node2D body)
 	{
 		hide();
 		hit.emit();
@@ -38,10 +46,10 @@ class Player : Area2D
 | Path | What |
 |---|---|
 | `tools/generate_bindings.py` | Turns Godot's `extension_api.json` into binding tables (run by SCons) |
-| `src/bindings/` | Runtime that registers the tables with AngelScript: generic thunks, object proxies, Variant conversion, generated script base classes |
-| `src/` | The script language: language, script, instance, project module, `.as` loader/saver |
+| `src/bindings/` | Runtime that registers the tables with AngelScript: generic thunks, object proxies, Variant conversion, `TypedArray<T>` |
+| `src/` | The script language: language, script, instance (and coroutines), project module, dialect source pass, `.as` loader/saver |
 | `src/editor/` | Script editor syntax highlighting |
-| `thirdparty/angelscript/` | AngelScript 2.38.0 with a few performance patches ([PATCHES.md](thirdparty/angelscript/PATCHES.md)) |
+| `thirdparty/angelscript/` | AngelScript 2.38.0 with patches for performance, inheritance from engine classes and the dialect ([PATCHES.md](thirdparty/angelscript/PATCHES.md)) |
 | `thirdparty/godot-cpp/` | godot-cpp 10.0.0 (submodule), targeting the Godot 4.5 API |
 | `demo/` | Godot project: tests, benchmarks, the Dodge the Creeps port and a 3D playground |
 
@@ -92,9 +100,16 @@ godot --headless --path demo res://bench/run_bench.tscn
   unique across the project.
 - The main class of a file is the one named after it (`my_player.as` → `MyPlayer`), otherwise the
   first class that extends an engine class.
-- Mark fields with `[export]` to show them in the inspector, and declare signals as
-  `[signal] Signal name;`. Mark a class `[tool]` to run it in the editor.
+- Mark fields with `[export]` to show them in the inspector. Declare signals as
+  `signal hit(int damage);`. Mark a class `[tool]` to run it in the editor.
 - Singletons, static methods, enums and constants live in a namespace named after the class:
   `Input::is_action_pressed(...)`, `Node::PROCESS_MODE_ALWAYS`.
-- Engine objects are handles (`Node@`). Use `cast<T>(...)` to downcast, including to your own script
-  classes.
+- Engine objects and script classes extending them are handles: `Node n = get_node("x");`. Use
+  `cast<T>(...)` to downcast, including to your own script classes. `Player p = Player();` creates a
+  node with its script.
+- Pass a method where a Callable is expected: `timer.timeout.connect(on_timeout)`.
+- `await(signal)` pauses the script until the signal fires.
+- `TypedArray<T>` and `foreach (Node child : get_children())`.
+- `default z_index = 3;` in a class body sets an engine property before the constructor runs.
+
+See [docs/phase2.md](docs/phase2.md) for details and how `await` differs from GDScript.

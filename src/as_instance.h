@@ -22,6 +22,14 @@ struct AngelScriptInstance {
 	// Builds the script object for `p_owner` and wraps it in a Godot ScriptInstance.
 	static GDExtensionScriptInstancePtr create(const Ref<AngelScript> &p_script, GDExtensionObjectPtr p_owner);
 
+	// `Variant await(const Signal &in)`: suspends the script until the signal fires.
+	static void script_await(asIScriptGeneric *g);
+
+	// A script wrote `Player p = Player();`: creates the engine object for the script object being
+	// constructed and attaches the script to it, so the new instance adopts that script object.
+	// Returns the engine object, or null (with a script exception) when that isn't possible.
+	static GDExtensionObjectPtr construct_owner(asIScriptObject *p_object, asITypeInfo *p_native_base);
+
 	static const GDExtensionScriptInstanceInfo3 *get_info();
 };
 

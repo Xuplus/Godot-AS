@@ -1,13 +1,21 @@
 #include "as_instance.h"
 
 #include "as_language.h"
+#include "as_project.h"
+#include "bindings/api_data.h"
 #include "bindings/runtime.h"
 
+#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/godot.hpp>
+#include <godot_cpp/variant/callable_custom.hpp>
+#include <godot_cpp/variant/signal.hpp>
 
+#include <memory>
 #include <mutex>
 #include <new>
+#include <vector>
 
 namespace {
 
@@ -15,6 +23,9 @@ std::mutex property_list_mutex;
 std::unordered_map<const GDExtensionPropertyInfo *, ASPropertyListStorage *> property_lists;
 
 AngelScriptInstance *self(GDExtensionScriptInstanceDataPtr p) { return static_cast<AngelScriptInstance *>(p); }
+
+// The script object that the next instance created on this thread adopts (see construct_owner).
+thread_local asIScriptObject *adopting = nullptr;
 
 // Converted call arguments that must stay alive until Execute() returns.
 struct ArgTemps {
@@ -66,6 +77,122 @@ bool set_arg(asIScriptContext *p_ctx, asUINT p_index, int p_type_id, asDWORD p_f
 	// reference, which the callee releases).
 	void *slot = p_ctx->GetAddressOfArg(p_index);
 	return slot && asrt::from_variant(p_value, slot, p_type_id);
+}
+
+// --- coroutines ----------------------------------------------------------------------------------------
+//
+// `await(signal)` suspends the AngelScript context. The call from Godot returns (with null), and the
+// context waits in an ASAwait, a one-shot callable connected to the signal, which resumes it. A
+// suspended context suspends the whole script call stack: a script function that calls one that
+// awaits waits too.
+
+// A context running on behalf of a script instance on this thread, innermost last.
+struct ActiveCall {
+	asIScriptContext *ctx;
+	GDExtensionObjectPtr owner;
+	asIScriptObject *object;
+};
+thread_local std::vector<ActiveCall> active_calls;
+
+class ASAwait;
+// Set by await() for the context that is about to suspend.
+thread_local ASAwait *suspending = nullptr;
+
+int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScriptObject *p_object, std::unique_ptr<ArgTemps> &p_temps);
+
+class ASAwait : public CallableCustom {
+public:
+	asIScriptContext *ctx = nullptr;
+	Variant *result = nullptr; // await()'s return value, on the suspended context's stack
+	GDExtensionObjectPtr owner = nullptr;
+	ObjectID owner_id;
+	asIScriptObject *object = nullptr; // kept alive while suspended
+	mutable std::unique_ptr<ArgTemps> temps; // reference arguments of the suspended call
+	mutable bool suspended = false;
+	mutable bool done = false;
+
+	~ASAwait() override {
+		if (suspended && !done) {
+			// Never resumed: the signal's object or the script's owner went away.
+			ctx->Abort();
+			release();
+		}
+		if (object) {
+			object->Release();
+		}
+	}
+
+	void release() const {
+		done = true;
+		AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
+		if (lang) {
+			lang->release_context(ctx);
+		} else {
+			ctx->Release();
+		}
+	}
+
+	static bool compare_equal(const CallableCustom *p_a, const CallableCustom *p_b) { return p_a == p_b; }
+	static bool compare_less(const CallableCustom *p_a, const CallableCustom *p_b) { return p_a < p_b; }
+
+	uint32_t hash() const override { return (uint32_t)((uintptr_t)this >> 4); }
+	String get_as_text() const override { return "<AngelScript await>"; }
+	CompareEqualFunc get_compare_equal_func() const override { return compare_equal; }
+	CompareLessFunc get_compare_less_func() const override { return compare_less; }
+	ObjectID get_object() const override { return owner_id; }
+	int get_argument_count(bool &r_is_valid) const override {
+		r_is_valid = false; // takes whatever the signal sends
+		return 0;
+	}
+
+	void call(const Variant **p_arguments, int p_argcount, Variant &r_return_value, GDExtensionCallError &r_call_error) const override {
+		r_call_error.error = GDEXTENSION_CALL_OK;
+		if (!suspended || done) {
+			return;
+		}
+		if (!ObjectDB::get_instance(owner_id)) {
+			ctx->Abort();
+			release();
+			return;
+		}
+		// `Variant v = await(sig);` gets the signal's argument, or an Array of them.
+		if (p_argcount == 1) {
+			*result = *p_arguments[0];
+		} else if (p_argcount > 1) {
+			Array args;
+			for (int i = 0; i < p_argcount; i++) {
+				args.append(*p_arguments[i]);
+			}
+			*result = args;
+		}
+		done = true;
+		std::unique_ptr<ArgTemps> moved = std::move(temps);
+		if (run_context(ctx, owner, object, moved) != asEXECUTION_SUSPENDED) {
+			AngelScriptLanguage::get_singleton()->release_context(ctx);
+		}
+	}
+};
+
+// Runs a prepared context for a script instance. When it suspends in await(), the context and the
+// call's reference arguments move to that await's callable.
+int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScriptObject *p_object, std::unique_ptr<ArgTemps> &p_temps) {
+	ASAwait *outer = suspending;
+	suspending = nullptr;
+	active_calls.push_back({ p_ctx, p_owner, p_object });
+	int r = AngelScriptLanguage::get_singleton()->run(p_ctx);
+	active_calls.pop_back();
+	ASAwait *awaiting = suspending;
+	suspending = outer;
+	if (r == asEXECUTION_SUSPENDED) {
+		if (awaiting && awaiting->ctx == p_ctx) {
+			awaiting->temps = std::move(p_temps);
+			awaiting->suspended = true;
+		} else {
+			p_ctx->Abort(); // suspended by something other than await(): can't be resumed
+			r = asEXECUTION_ABORTED;
+		}
+	}
+	return r;
 }
 
 Variant get_return(asIScriptContext *p_ctx, const asIScriptFunction *p_func) {
@@ -253,10 +380,18 @@ GDExtensionScriptInstancePtr AngelScriptInstance::create(const Ref<AngelScript> 
 	std::shared_ptr<ASCompiledClass> compiled = p_script->get_compiled();
 	ERR_FAIL_COND_V_MSG(!compiled, nullptr, vformat("Script '%s' has no compiled class.", p_script->get_script_path()));
 
-	asIScriptEngine *engine = AngelScriptLanguage::get_singleton()->get_engine();
-	asrt::set_pending_owner(p_owner);
-	asIScriptObject *obj = static_cast<asIScriptObject *>(engine->CreateScriptObject(compiled->type));
-	asrt::set_pending_owner(nullptr);
+	asIScriptObject *obj = nullptr;
+	if (adopting && adopting->GetObjectType() == compiled->type) {
+		// Created from script: the script object exists already and binds to p_owner when this returns.
+		obj = adopting;
+		obj->AddRef();
+		adopting = nullptr;
+	} else {
+		asIScriptEngine *engine = AngelScriptLanguage::get_singleton()->get_engine();
+		asrt::set_pending_owner(p_owner);
+		obj = static_cast<asIScriptObject *>(engine->CreateScriptObject(compiled->type));
+		asrt::set_pending_owner(nullptr);
+	}
 	ERR_FAIL_NULL_V_MSG(obj, nullptr, vformat("Failed to construct AngelScript class '%s'.", compiled->type->GetName()));
 
 	for (const ASCompiledClass::SignalInfo &s : compiled->signals) {
@@ -269,6 +404,50 @@ GDExtensionScriptInstancePtr AngelScriptInstance::create(const Ref<AngelScript> 
 	inst->compiled = compiled;
 	inst->object = obj;
 	return gdextension_interface::script_instance_create3(&instance_info, inst);
+}
+
+GDExtensionObjectPtr AngelScriptInstance::construct_owner(asIScriptObject *p_object, asITypeInfo *p_native_base) {
+	asIScriptContext *ctx = asGetActiveContext();
+	auto fail = [&](const char *p_message) -> GDExtensionObjectPtr {
+		if (ctx) {
+			ctx->SetException(p_message);
+		}
+		return nullptr;
+	};
+
+	String path = ASProject::get().get_path_of(p_object->GetObjectType());
+	if (path.is_empty()) {
+		return fail("Only the main class of a file can be created from script");
+	}
+	int32_t base_class = asrt::find_class(p_native_base->GetName());
+	for (int32_t k = base_class; k >= 0; k = asapi::classes[k].parent) {
+		if (strcmp(asapi::classes[k].name, "RefCounted") == 0) {
+			// The engine object would own the script object while script handles own nothing: create
+			// these from Godot (ClassDB / ResourceLoader) until script handles can hold them.
+			return fail("Script classes extending RefCounted can't be created from script yet");
+		}
+	}
+	Ref<AngelScript> script = ResourceLoader::get_singleton()->load(path);
+	if (script.is_null()) {
+		return fail("Couldn't load the class's script");
+	}
+
+	StringName base(p_native_base->GetName());
+	GDExtensionObjectPtr owner = gdextension_interface::classdb_construct_object2(base._native_ptr());
+	if (!owner) {
+		return fail("Couldn't construct the engine object");
+	}
+	Object *object = static_cast<Object *>(godot::internal::get_object_instance_binding(owner));
+	asIScriptObject *previous = adopting;
+	adopting = p_object;
+	object->set_script(script);
+	bool adopted = adopting == nullptr;
+	adopting = previous;
+	if (!adopted) {
+		gdextension_interface::object_destroy(owner);
+		return fail("Couldn't attach the script to the new object");
+	}
+	return owner;
 }
 
 void AngelScriptInstance::call(const StringName &p_method, const GDExtensionConstVariantPtr *p_args, GDExtensionInt p_argcount, Variant &r_ret, GDExtensionCallError &r_error) {
@@ -295,7 +474,19 @@ void AngelScriptInstance::call(const StringName &p_method, const GDExtensionCons
 	ctx->Prepare(fn);
 	ctx->SetObject(object);
 
-	ArgTemps temps;
+	// Arguments passed by reference point into the temporaries. If the call may outlive this frame
+	// (it awaits), they must live on the heap.
+	ArgTemps stack_temps;
+	std::unique_ptr<ArgTemps> heap_temps;
+	for (asUINT i = 0; i < param_count; i++) {
+		asDWORD flags = 0;
+		fn->GetParam(i, nullptr, &flags);
+		if (flags & asTM_INOUTREF) {
+			heap_temps = std::make_unique<ArgTemps>();
+			break;
+		}
+	}
+	ArgTemps &temps = heap_temps ? *heap_temps : stack_temps;
 	for (asUINT i = 0; i < param_count; i++) {
 		int type_id = 0;
 		asDWORD flags = 0;
@@ -311,10 +502,43 @@ void AngelScriptInstance::call(const StringName &p_method, const GDExtensionCons
 	}
 
 	r_error.error = GDEXTENSION_CALL_OK;
-	if (lang->execute(ctx)) {
+	int r = run_context(ctx, owner, object, heap_temps);
+	if (r == asEXECUTION_SUSPENDED) {
+		return; // the context now belongs to the await; Godot gets null, like a GDScript coroutine
+	}
+	if (r == asEXECUTION_FINISHED) {
 		r_ret = get_return(ctx, fn);
 	}
 	lang->release_context(ctx);
+}
+
+void AngelScriptInstance::script_await(asIScriptGeneric *g) {
+	asIScriptContext *ctx = asGetActiveContext();
+	Variant *result = memnew_placement(g->GetAddressOfReturnLocation(), Variant);
+	if (active_calls.empty() || active_calls.back().ctx != ctx) {
+		ctx->SetException("await() only works in code that Godot called (a method, virtual or signal handler)");
+		return;
+	}
+	const Signal &signal = *static_cast<const Signal *>(g->GetArgAddress(0));
+	if (signal.is_null()) {
+		ctx->SetException("await() on a null Signal");
+		return;
+	}
+	const ActiveCall &call = active_calls.back();
+	ASAwait *awaiter = memnew(ASAwait);
+	awaiter->ctx = ctx;
+	awaiter->result = result;
+	awaiter->owner = call.owner;
+	awaiter->owner_id = ObjectID(gdextension_interface::object_get_instance_id(call.owner));
+	awaiter->object = call.object;
+	call.object->AddRef();
+	Callable callable(awaiter);
+	if (Signal(signal).connect(callable, Object::CONNECT_ONE_SHOT) != OK) {
+		ctx->SetException("await() couldn't connect to the signal");
+		return;
+	}
+	suspending = awaiter;
+	ctx->Suspend();
 }
 
 bool AngelScriptInstance::set(const StringName &p_name, const Variant &p_value) {
