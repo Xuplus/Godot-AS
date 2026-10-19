@@ -78,6 +78,17 @@ on it: its elements live as Variants, so it can't hand out references to a `T`.
 
 File: `source/as_scriptengine.cpp`.
 
+## Uninitialized objects with value-template members (bug fix)
+
+`AllocateUninitializedObject` (used by `CreateUninitializedScriptObject`) sent every template member
+down the reference-template branch, which calls the construct behaviour as a factory. A value-type
+template instance (`TypedArray<int64>`) has a constructor instead, so it crashed. Its default
+constructor is a generated script stub that passes the type to the registered constructor, so the
+patch runs it in a context; a system constructor is called directly with the type as its parameter.
+
+File: `source/as_scriptobject.cpp`. Godot-AS hits this during hot reload, which creates script
+objects without running their constructors.
+
 ## foreach over value types (bug fix)
 
 `CompileForEachStatement` stores the range in a local variable and reads it through a pointer

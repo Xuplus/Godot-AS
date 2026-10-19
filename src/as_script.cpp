@@ -51,6 +51,15 @@ const std::shared_ptr<ASCompiledClass> &AngelScript::get_compiled() const {
 	return compiled;
 }
 
+std::vector<GDExtensionObjectPtr> AngelScript::get_instance_owners() const {
+	std::lock_guard<std::mutex> lock(instances_mutex);
+	std::vector<GDExtensionObjectPtr> out;
+	for (GDExtensionObjectPtr owner : instance_owners) {
+		out.push_back(owner);
+	}
+	return out;
+}
+
 void AngelScript::instance_destroyed(GDExtensionObjectPtr p_owner) {
 	std::lock_guard<std::mutex> lock(instances_mutex);
 	instance_owners.erase(p_owner);

@@ -9,6 +9,7 @@
 
 #include <memory>
 #include <mutex>
+#include <vector>
 
 using namespace godot;
 
@@ -33,6 +34,8 @@ protected:
 	static void _bind_methods() {}
 
 public:
+	// The objects this script is attached to (not placeholders).
+	std::vector<GDExtensionObjectPtr> get_instance_owners() const;
 	AngelScript();
 	~AngelScript();
 

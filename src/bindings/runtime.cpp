@@ -537,9 +537,7 @@ public:
 		if (!owner) {
 			return;
 		}
-		ASObjectProxy *proxy = asproxy::get(owner);
-		asproxy::add_self_ref(proxy);
-		*static_cast<ASObjectProxy **>(p_object->GetAddressOfProperty(0)) = proxy;
+		bind_script_owner(p_object, owner);
 		apply_defaults(p_object);
 	}
 
@@ -1351,6 +1349,12 @@ void init_signal(void *p_field, GDExtensionObjectPtr p_owner, const StringName &
 	destruct(GDEXTENSION_VARIANT_TYPE_SIGNAL, p_field);
 	const void *args[] = { &p_owner, &p_name };
 	ctor(p_field, args);
+}
+
+void bind_script_owner(asIScriptObject *p_object, GDExtensionObjectPtr p_owner) {
+	ASObjectProxy *proxy = asproxy::get(p_owner);
+	asproxy::add_self_ref(proxy);
+	*static_cast<ASObjectProxy **>(p_object->GetAddressOfProperty(0)) = proxy;
 }
 
 void release_script_owner(asIScriptObject *p_object) {

@@ -11,10 +11,14 @@
 #include <godot_cpp/godot.hpp>
 #include <godot_cpp/variant/callable_custom.hpp>
 #include <godot_cpp/variant/signal.hpp>
+#include <godot_cpp/variant/utility_functions.hpp>
 
 #include <memory>
 #include <mutex>
 #include <new>
+#include <string>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 namespace {
@@ -97,6 +101,8 @@ thread_local std::vector<ActiveCall> active_calls;
 class ASAwait;
 // Set by await() for the context that is about to suspend.
 thread_local ASAwait *suspending = nullptr;
+// Awaits whose context is suspended, so a hot reload can cancel those of a replaced object.
+std::unordered_set<const ASAwait *> suspended_awaits;
 
 int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScriptObject *p_object, std::unique_ptr<ArgTemps> &p_temps);
 
@@ -112,17 +118,21 @@ public:
 	mutable bool done = false;
 
 	~ASAwait() override {
-		if (suspended && !done) {
-			// Never resumed: the signal's object or the script's owner went away.
-			ctx->Abort();
-			release();
-		}
+		cancel(); // never resumed: the signal's object or the script's owner went away
 		if (object) {
 			object->Release();
 		}
 	}
 
+	void cancel() const {
+		if (suspended && !done) {
+			ctx->Abort();
+			release();
+		}
+	}
+
 	void release() const {
+		suspended_awaits.erase(this);
 		done = true;
 		AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
 		if (lang) {
@@ -166,6 +176,7 @@ public:
 			*result = args;
 		}
 		done = true;
+		suspended_awaits.erase(this);
 		std::unique_ptr<ArgTemps> moved = std::move(temps);
 		if (run_context(ctx, owner, object, moved) != asEXECUTION_SUSPENDED) {
 			AngelScriptLanguage::get_singleton()->release_context(ctx);
@@ -187,6 +198,7 @@ int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScript
 		if (awaiting && awaiting->ctx == p_ctx) {
 			awaiting->temps = std::move(p_temps);
 			awaiting->suspended = true;
+			suspended_awaits.insert(awaiting);
 		} else {
 			p_ctx->Abort(); // suspended by something other than await(): can't be resumed
 			r = asEXECUTION_ABORTED;
@@ -510,6 +522,109 @@ void AngelScriptInstance::call(const StringName &p_method, const GDExtensionCons
 		r_ret = get_return(ctx, fn);
 	}
 	lang->release_context(ctx);
+}
+
+// --- hot reload ------------------------------------------------------------------------------------
+
+namespace {
+
+// Gives the fields of an object created with CreateUninitializedScriptObject their type's default.
+// AngelScript already default-constructed the non-POD value types it keeps on the heap (String,
+// Array, ...); POD value types and primitives are zeroed and handles are null.
+void init_fields(asIScriptObject *p_object) {
+	for (asUINT i = 0; i < p_object->GetPropertyCount(); i++) {
+		int type_id = p_object->GetPropertyTypeId(i);
+		if ((type_id & asTYPEID_OBJHANDLE) || !(type_id & asTYPEID_MASK_OBJECT)) {
+			continue;
+		}
+		asITypeInfo *type = p_object->GetEngine()->GetTypeInfoById(type_id);
+		if (type && (type->GetFlags() & asOBJ_SCRIPT_OBJECT)) {
+			init_fields(static_cast<asIScriptObject *>(p_object->GetAddressOfProperty(i)));
+			continue;
+		}
+		asrt::TypeInfo info = asrt::type_info(type_id);
+		if (info.kind == asrt::TypeKind::Builtin && type && (type->GetFlags() & asOBJ_POD)) {
+			asrt::construct_default(info.vtype, p_object->GetAddressOfProperty(i)); // e.g. Transform2D's identity
+		}
+	}
+}
+
+bool variant_compatible(int p_type_id) {
+	return asrt::variant_type(p_type_id) != Variant::NIL || asrt::type_info(p_type_id).kind == asrt::TypeKind::Variant;
+}
+
+} // namespace
+
+AngelScriptInstance *AngelScriptInstance::from_owner(GDExtensionObjectPtr p_owner) {
+	void *data = gdextension_interface::object_get_script_instance(p_owner, AngelScriptLanguage::get_singleton()->_owner);
+	return static_cast<AngelScriptInstance *>(data);
+}
+
+asIScriptObject *AngelScriptInstance::create_reloaded(const std::shared_ptr<ASCompiledClass> &p_class) const {
+	asIScriptEngine *engine = AngelScriptLanguage::get_singleton()->get_engine();
+	asIScriptObject *fresh = static_cast<asIScriptObject *>(engine->CreateUninitializedScriptObject(p_class->type));
+	if (!fresh) {
+		return nullptr;
+	}
+	init_fields(fresh);
+	asrt::bind_script_owner(fresh, owner);
+	for (const ASCompiledClass::SignalInfo &s : p_class->signals) {
+		asrt::init_signal(fresh->GetAddressOfProperty(s.index), owner, s.name);
+	}
+	return fresh;
+}
+
+void AngelScriptInstance::transfer_state(asIScriptObject *p_old) {
+	std::unordered_map<std::string, asUINT> old_fields;
+	for (asUINT i = 0; i < p_old->GetPropertyCount(); i++) {
+		old_fields[p_old->GetPropertyName(i)] = i;
+	}
+	std::unordered_set<std::string> signal_fields;
+	for (const ASCompiledClass::SignalInfo &s : compiled->signals) {
+		signal_fields.insert(String(s.name).utf8().get_data());
+	}
+	for (asUINT i = 1; i < object->GetPropertyCount(); i++) { // 0 is __self
+		const char *name = object->GetPropertyName(i);
+		if (signal_fields.count(name)) {
+			continue; // already bound to the owner's signal
+		}
+		int type_id = object->GetPropertyTypeId(i);
+		void *dst = object->GetAddressOfProperty(i);
+		auto it = old_fields.find(name);
+		Variant value;
+		if (it == old_fields.end()) {
+			// A field the new version added: its initializer, if it has one.
+			if (variant_compatible(type_id) && ASProject::get().evaluate_initializer(*compiled, String::utf8(name), type_id, value)) {
+				asrt::from_variant(value, dst, type_id);
+			}
+			continue;
+		}
+		int old_type_id = p_old->GetPropertyTypeId(it->second);
+		const void *src = p_old->GetAddressOfProperty(it->second);
+		if (variant_compatible(type_id) && variant_compatible(old_type_id) && asrt::to_variant(src, old_type_id, value)) {
+			// Through Variant: same-typed values copy over, compatible ones convert (int -> float),
+			// and handles to other script objects resolve to their owners' new script objects.
+			if (!asrt::from_variant(value, dst, type_id)) {
+				UtilityFunctions::print_verbose(vformat("AngelScript hot reload: '%s.%s' changed type; it starts from its default.", compiled->type->GetName(), name));
+			}
+		} else {
+			UtilityFunctions::print_verbose(vformat("AngelScript hot reload: '%s.%s' can't carry its value over (not a Godot type); it starts from its default.", compiled->type->GetName(), name));
+		}
+	}
+}
+
+void AngelScriptInstance::retire(asIScriptObject *p_old) {
+	std::vector<const ASAwait *> cancelled;
+	for (const ASAwait *a : suspended_awaits) {
+		if (a->object == p_old) {
+			cancelled.push_back(a);
+		}
+	}
+	for (const ASAwait *a : cancelled) {
+		a->cancel();
+	}
+	asrt::release_script_owner(p_old);
+	p_old->Release();
 }
 
 void AngelScriptInstance::script_await(asIScriptGeneric *g) {

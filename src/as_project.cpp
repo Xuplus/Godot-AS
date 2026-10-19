@@ -6,6 +6,7 @@
 
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/project_settings.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/core/property_info.hpp>
@@ -14,7 +15,10 @@
 #include <scriptbuilder/scriptbuilder.h>
 
 #include <algorithm>
+#include <filesystem>
 #include <regex>
+
+namespace fs = std::filesystem;
 
 namespace {
 
@@ -76,37 +80,46 @@ Variant zero_value(int p_type_id) {
 	}
 }
 
+// Compiles `expr` as a tiny function returning the field's type and runs it.
+bool evaluate_expression(asIScriptModule *p_module, const std::string &p_expr, int p_type_id, Variant &r_value);
+
 // The default of an exported field, from its initializer in the source (`[export] float speed = 2.5f;`).
-// The initializer is compiled as a tiny function and run; the class constructor never runs.
+// The class constructor never runs.
 Variant compute_default(asIScriptModule *p_module, const String &p_source, const String &p_name, int p_type_id) {
 	CharString src = p_source.utf8();
 	CharString name = p_name.utf8();
 	std::regex pattern(std::string("\\[\\s*export[^\\]]*\\][^;=]*?\\b") + name.get_data() + "\\s*=\\s*([^;]+);");
 	std::cmatch match;
-	if (!std::regex_search(src.get_data(), match, pattern)) {
+	Variant value;
+	if (!std::regex_search(src.get_data(), match, pattern) || !evaluate_expression(p_module, match[1].str(), p_type_id, value)) {
 		return zero_value(p_type_id);
 	}
-	std::string expr = match[1].str();
+	return value;
+}
+
+bool evaluate_expression(asIScriptModule *p_module, const std::string &p_expr, int p_type_id, Variant &r_value) {
+	const std::string &expr = p_expr;
 	asIScriptEngine *engine = p_module->GetEngine();
 	std::string type_decl = engine->GetTypeDeclaration(p_type_id, true);
 	std::string code = type_decl + " __default_value() { return " + expr + "; }";
 
 	asIScriptFunction *fn = nullptr;
 	if (p_module->CompileFunction("default value", code.c_str(), -1, 0, &fn) < 0 || !fn) {
-		return zero_value(p_type_id);
+		return false;
 	}
 	AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
 	asIScriptContext *ctx = lang->acquire_context();
-	Variant result = zero_value(p_type_id);
 	ctx->Prepare(fn);
-	if (lang->execute(ctx)) {
+	bool ok = lang->execute(ctx);
+	if (ok) {
 		bool value_type = (p_type_id & asTYPEID_MASK_OBJECT) && !(p_type_id & asTYPEID_OBJHANDLE);
 		const void *ptr = value_type ? ctx->GetReturnObject() : ctx->GetAddressOfReturnValue();
-		asrt::to_variant(ptr, p_type_id, result);
+		ok = asrt::to_variant(ptr, p_type_id, r_value);
 	}
+	ctx->Unprepare();
 	lang->release_context(ctx);
 	fn->Release();
-	return result;
+	return ok;
 }
 
 } // namespace
@@ -135,6 +148,109 @@ ASProject::File ASProject::make_file(const String &p_source) {
 	return f;
 }
 
+// Hot reload walks the project folder with std::filesystem, not Godot's DirAccess (about 5 ms per
+// walk of the demo project, against 0.6 ms). It touches no Godot API, so the watcher thread can use
+// it. Only meaningful where res:// is a folder on disk (editor builds).
+void ASProject::snapshot(const std::string &p_root, std::map<std::string, uint64_t> &r_files) {
+	std::error_code ec;
+	fs::path root = fs::u8path(p_root);
+	fs::recursive_directory_iterator it(root, fs::directory_options::skip_permission_denied, ec);
+	for (; !ec && it != fs::recursive_directory_iterator(); it.increment(ec)) {
+		const fs::directory_entry &entry = *it;
+		std::string name = entry.path().filename().u8string();
+		if (entry.is_directory(ec)) {
+			if (!name.empty() && name[0] == '.') {
+				it.disable_recursion_pending(); // .godot, .git, ...
+			}
+			continue;
+		}
+		if (name.size() < 4 || (name.compare(name.size() - 3, 3, ".as") != 0 && name.compare(name.size() - 3, 3, ".AS") != 0)) {
+			continue;
+		}
+		r_files[entry.path().lexically_relative(root).generic_u8string()] = file_stamp_of(entry.path());
+	}
+}
+
+std::string ASProject::project_root() {
+	return ProjectSettings::get_singleton()->globalize_path("res://").utf8().get_data();
+}
+
+void ASProject::collect_paths(std::map<String, uint64_t> &r_paths) {
+	std::map<std::string, uint64_t> files_on_disk;
+	snapshot(project_root(), files_on_disk);
+	for (const auto &kv : files_on_disk) {
+		r_paths[String("res://") + String::utf8(kv.first.c_str())] = kv.second;
+	}
+}
+
+uint64_t ASProject::file_stamp_of(const fs::path &p_path) {
+	std::error_code ec;
+	fs::file_time_type t = fs::last_write_time(p_path, ec);
+	return ec ? 0 : (uint64_t)t.time_since_epoch().count();
+}
+
+uint64_t ASProject::file_stamp(const String &p_res_path) {
+	CharString global = ProjectSettings::get_singleton()->globalize_path(p_res_path).utf8();
+	return file_stamp_of(fs::u8path(global.get_data()));
+}
+
+std::vector<String> ASProject::poll_disk() {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	std::vector<String> changed;
+	if (!scanned) {
+		return changed; // nothing loaded yet: the first build reads everything
+	}
+	std::map<String, uint64_t> paths;
+	collect_paths(paths);
+	for (const auto &kv : paths) {
+		const String &path = kv.first;
+		uint64_t mtime = kv.second;
+		auto it = files.find(path);
+		if (it != files.end() && mtime == it->second.mtime) {
+			continue;
+		}
+		String text = FileAccess::get_file_as_string(path);
+		if (it != files.end() && text == it->second.source) {
+			it->second.mtime = mtime;
+			continue;
+		}
+		File f = make_file(text);
+		f.mtime = mtime;
+		files[path] = f;
+		changed.push_back(path);
+	}
+	for (auto it = files.begin(); it != files.end();) {
+		if (paths.count(it->first)) {
+			++it;
+			continue;
+		}
+		changed.push_back(it->first);
+		classes.erase(it->first);
+		it = files.erase(it);
+	}
+	return changed;
+}
+
+String ASProject::get_source(const String &p_path) const {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	auto it = files.find(p_path);
+	return it == files.end() ? String() : it->second.source;
+}
+
+bool ASProject::evaluate_initializer(const ASCompiledClass &p_class, const String &p_field, int p_type_id, Variant &r_value) const {
+	String source = get_source(p_class.path);
+	CharString src = source.utf8();
+	CharString name = p_field.utf8();
+	// A declaration, `Type name = expr;`: the name follows a type (an identifier, `@` or `>`), unlike
+	// an assignment statement, which follows `;`, `{` or `}`.
+	std::regex pattern(std::string("[A-Za-z0-9_@>\\]]\\s+") + name.get_data() + "\\s*=\\s*([^;]+);");
+	std::cmatch match;
+	if (!p_class.module || !std::regex_search(src.get_data(), match, pattern)) {
+		return false;
+	}
+	return evaluate_expression(p_class.module->module, match[1].str(), p_type_id, r_value);
+}
+
 void ASProject::scan_directory(const String &p_dir) {
 	PackedStringArray dirs = DirAccess::get_directories_at(p_dir);
 	for (int i = 0; i < dirs.size(); i++) {
@@ -150,7 +266,9 @@ void ASProject::scan_directory(const String &p_dir) {
 		}
 		String path = p_dir.path_join(file_names[i]);
 		if (files.find(path) == files.end()) {
-			files[path] = make_file(FileAccess::get_file_as_string(path));
+			File f = make_file(FileAccess::get_file_as_string(path));
+			f.mtime = file_stamp(path);
+			files[path] = f;
 		}
 	}
 }
@@ -169,7 +287,9 @@ bool ASProject::set_source(const String &p_path, const String &p_source) {
 	if (it != files.end() && it->second.source == p_source) {
 		return false;
 	}
-	files[p_path] = make_file(p_source);
+	File f = make_file(p_source);
+	f.mtime = file_stamp(p_path);
+	files[p_path] = f;
 	return true;
 }
 
@@ -401,7 +521,7 @@ bool ASProject::build() {
 		lang->set_diagnostic_sink(nullptr);
 		if (ok) {
 			publish(module, builder, remaining);
-			return false; // the files with errors have no class until they're fixed
+			return false; // the files with errors keep their previous class until they're fixed
 		}
 	}
 	return false;
@@ -417,6 +537,15 @@ bool ASProject::publish(asIScriptModule *p_module, CScriptBuilder &p_builder, co
 		std::shared_ptr<ASCompiledClass> cls = make_class(module, builder, handle, kv.first, kv.second, p_files);
 		if (cls) {
 			new_classes.insert(kv.first, cls);
+		}
+	}
+	// Files left out of this build because of errors keep their last good class (and module), so
+	// running instances and new ones keep working until the file is fixed.
+	for (const auto &kv : files) {
+		if (p_files.count(kv.first) == 0) {
+			if (const std::shared_ptr<ASCompiledClass> *old = classes.getptr(kv.first)) {
+				new_classes.insert(kv.first, *old);
+			}
 		}
 	}
 	classes = new_classes;

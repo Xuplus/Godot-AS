@@ -10,7 +10,10 @@
 
 #include <angelscript.h>
 
+#include <filesystem>
 #include <map>
+#include <set>
+#include <string>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -67,13 +70,14 @@ struct ASCompiledClass {
 };
 
 // All .as files of the project compile into one module, the way UnrealEngine-Angelscript does, so
-// classes can use each other across files. A change to any file rebuilds the module (milliseconds);
-// if the build fails, the previous classes stay in use.
+// classes can use each other across files. A change to any file rebuilds the module (milliseconds).
+// Files that fail to compile keep their last good class, so the rest of the project moves on.
 class ASProject {
 	struct File {
 		String source;
 		String processed;
 		assrc::SourceInfo info;
+		uint64_t mtime = 0; // file_stamp() when `source` was read
 	};
 
 	mutable std::recursive_mutex mutex;
@@ -85,6 +89,11 @@ class ASProject {
 	HashMap<String, std::shared_ptr<ASCompiledClass>> classes;
 
 	void scan_directory(const String &p_dir);
+	// Every .as file under res:// with its file_stamp().
+	static void collect_paths(std::map<String, uint64_t> &r_paths);
+	// The file's modification time in the file system's own units (sub-second), 0 if unknown.
+	static uint64_t file_stamp(const String &p_res_path);
+	static uint64_t file_stamp_of(const std::filesystem::path &p_path);
 	void ensure_scanned();
 	static File make_file(const String &p_source);
 	bool build_module(const std::map<String, File> &p_files, const String &p_module_name, asIScriptModule **r_module, class CScriptBuilder &r_builder) const;
@@ -94,9 +103,19 @@ class ASProject {
 public:
 	static ASProject &get();
 
+	// Every .as file under the folder `p_root`, relative path -> file_stamp. Uses no Godot API, so
+	// it's safe on any thread (the hot reload watcher).
+	static void snapshot(const std::string &p_root, std::map<std::string, uint64_t> &r_files);
+	// res:// as a folder on disk.
+	static std::string project_root();
+
 	// Records a file's source. Returns true if it changed (or is new).
 	bool set_source(const String &p_path, const String &p_source);
 	void remove(const String &p_path);
+
+	// Reads .as files that changed on disk (or appeared, or were deleted) since they were last read.
+	// Returns the paths whose source changed; call build() if any did.
+	std::vector<String> poll_disk();
 
 	// Builds all files into a new module. On success the new classes replace the old ones.
 	bool build();
@@ -106,6 +125,12 @@ public:
 	// The script path whose main class is `p_type`, or empty.
 	String get_path_of(const asITypeInfo *p_type) const;
 	uint64_t get_generation() const;
+
+	// A field's initializer from its declaration (`int lives = 3;`), evaluated with the class's module.
+	// False when the field has none. Used for fields added by a hot reload.
+	bool evaluate_initializer(const ASCompiledClass &p_class, const String &p_field, int p_type_id, Variant &r_value) const;
+
+	String get_source(const String &p_path) const;
 
 	// Compiles everything with `p_source` standing in for `p_path`, without keeping the result.
 	bool validate(const String &p_path, const String &p_source) const;

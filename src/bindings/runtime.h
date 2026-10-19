@@ -63,6 +63,9 @@ void set_pending_owner(GDExtensionObjectPtr p_owner);
 // Sets a `Signal` field of a script object to `p_owner`'s signal `p_name`.
 void init_signal(void *p_field, GDExtensionObjectPtr p_owner, const godot::StringName &p_name);
 
+// Sets a script object's hidden `__self` property to `p_owner` (a reference that doesn't keep it alive).
+void bind_script_owner(asIScriptObject *p_object, GDExtensionObjectPtr p_owner);
+
 // Drops a script object's reference to its owner (its hidden `__self` property).
 void release_script_owner(asIScriptObject *p_object);
 

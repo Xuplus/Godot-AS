@@ -29,6 +29,8 @@ func _ready() -> void:
 	var hud := main.get_node("HUD")
 	check(hud.get_node("MessageLabel").text == "Get Ready", "new_game shows 'Get Ready'")
 	check(main.get_node("Player").visible, "player is shown at the start position")
+	# A random mob can hit the player before the first score tick. The test hits the player itself below.
+	main.get_node("Player").monitoring = false
 
 	await wait_seconds(4.0)
 	var mobs := get_tree().get_nodes_in_group("mobs")

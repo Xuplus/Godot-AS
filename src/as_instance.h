@@ -31,6 +31,18 @@ struct AngelScriptInstance {
 	static GDExtensionObjectPtr construct_owner(asIScriptObject *p_object, asITypeInfo *p_native_base);
 
 	static const GDExtensionScriptInstanceInfo3 *get_info();
+
+	// --- hot reload (driven by AngelScriptLanguage::reload_instances) ---------------------------
+	// A new script object of `p_class` bound to this instance's owner. Its fields hold their type's
+	// default; no constructor or `default` statement runs.
+	asIScriptObject *create_reloaded(const std::shared_ptr<ASCompiledClass> &p_class) const;
+	// Copies field values, by name, from the previous script object into the current one. Fields the
+	// new class added get their initializer. Called once every instance has its new object, so
+	// handles to other script objects resolve to their new versions.
+	void transfer_state(asIScriptObject *p_old);
+	// Ends a replaced script object: cancels its pending awaits and cuts its link to the owner.
+	static void retire(asIScriptObject *p_old);
+	static AngelScriptInstance *from_owner(GDExtensionObjectPtr p_owner);
 };
 
 // Owns GDExtensionPropertyInfo arrays handed to Godot until it frees them.

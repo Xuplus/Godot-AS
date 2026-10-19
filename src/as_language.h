@@ -7,7 +7,10 @@
 
 #include <angelscript.h>
 
+#include <atomic>
+#include <condition_variable>
 #include <mutex>
+#include <thread>
 #include <unordered_set>
 #include <vector>
 
@@ -50,8 +53,24 @@ public:
 
 	void script_created(AngelScript *p_script);
 	void script_destroyed(AngelScript *p_script);
-	// Every live script refreshes its exports after the project module was rebuilt.
+	// After the project module was rebuilt: every live script refreshes its exports, and live
+	// instances whose class changed move to the new version, keeping their state (hot reload).
 	void project_rebuilt();
+	void reload_instances();
+
+	// Hot reload: a watcher thread checks the .as files every WATCH_INTERVAL_MS and raises
+	// `disk_changed`; _frame() then reads the changes and rebuilds on the main thread.
+	static constexpr int WATCH_INTERVAL_MS = 250;
+	bool hot_reload = false;
+	std::thread watcher;
+	std::mutex watcher_mutex;
+	std::condition_variable watcher_wake;
+	bool watcher_stop = false;
+	std::atomic<bool> disk_changed{ false };
+	void start_watcher();
+	void stop_watcher();
+	// Reads changed files from disk and rebuilds; returns true if the project was rebuilt.
+	bool reload_from_disk();
 
 	asIScriptEngine *get_engine();
 	void ensure_engine();

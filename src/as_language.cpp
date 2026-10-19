@@ -1,13 +1,17 @@
 #include "as_language.h"
 
+#include "as_instance.h"
 #include "as_project.h"
 #include "as_script.h"
 #include "bindings/runtime.h"
 
 #include <godot_cpp/classes/engine.hpp>
+#include <godot_cpp/classes/object.hpp>
+#include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/class_db.hpp>
 #include <godot_cpp/core/error_macros.hpp>
+#include <godot_cpp/godot.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 
 #include <scriptbuilder/scriptbuilder.h>
@@ -150,16 +154,107 @@ void AngelScriptLanguage::project_rebuilt() {
 	for (AngelScript *s : live) {
 		s->project_rebuilt();
 	}
+	reload_instances();
+}
+
+void AngelScriptLanguage::reload_instances() {
+	struct Reload {
+		AngelScriptInstance *instance;
+		asIScriptObject *old_object;
+		std::shared_ptr<ASCompiledClass> old_class;
+	};
+	uint64_t start = Time::get_singleton()->get_ticks_usec();
+	std::vector<Reload> reloads;
+	std::vector<AngelScript *> live;
+	{
+		std::lock_guard<std::mutex> lock(scripts_mutex);
+		live.assign(scripts.begin(), scripts.end());
+	}
+	for (AngelScript *s : live) {
+		const std::shared_ptr<ASCompiledClass> &cls = s->get_compiled();
+		if (!cls) {
+			continue;
+		}
+		for (GDExtensionObjectPtr owner : s->get_instance_owners()) {
+			AngelScriptInstance *inst = AngelScriptInstance::from_owner(owner);
+			if (!inst || !inst->object || inst->compiled == cls) {
+				continue;
+			}
+			// The engine object can't change class: if the script now extends something the owner
+			// isn't, the instance keeps the version it has.
+			Object *owner_object = static_cast<Object *>(godot::internal::get_object_instance_binding(owner));
+			if (cls->native_base != inst->compiled->native_base && (!owner_object || !owner_object->is_class(cls->native_base))) {
+				WARN_PRINT(vformat("AngelScript hot reload: '%s' now extends %s, which this %s isn't; it keeps running the previous version.",
+						s->get_script_path(), cls->native_base, owner_object ? owner_object->get_class() : String("object")));
+				continue;
+			}
+			asIScriptObject *fresh = inst->create_reloaded(cls);
+			if (!fresh) {
+				continue;
+			}
+			reloads.push_back({ inst, inst->object, inst->compiled });
+			inst->object = fresh;
+			inst->compiled = cls;
+		}
+	}
+	// Every instance has its new object before any state moves, so handles between script objects
+	// land on the new versions.
+	for (const Reload &r : reloads) {
+		r.instance->transfer_state(r.old_object);
+	}
+	for (const Reload &r : reloads) {
+		AngelScriptInstance::retire(r.old_object);
+	}
+	if (!reloads.empty()) {
+		UtilityFunctions::print_verbose(vformat("AngelScript: hot-reloaded %d instances in %.2f ms.", (int64_t)reloads.size(),
+				(Time::get_singleton()->get_ticks_usec() - start) / 1000.0));
+	}
+}
+
+bool AngelScriptLanguage::reload_from_disk() {
+	ASProject &project = ASProject::get();
+	std::vector<String> changed = project.poll_disk();
+	if (changed.empty()) {
+		return false;
+	}
+	// Loaded script resources follow the files, so a later _reload() doesn't bring back old text.
+	{
+		std::lock_guard<std::mutex> lock(scripts_mutex);
+		for (AngelScript *s : scripts) {
+			String path = s->get_script_path();
+			for (const String &c : changed) {
+				if (c == path) {
+					s->_set_source_code(project.get_source(path));
+				}
+			}
+		}
+	}
+	uint64_t generation = project.get_generation();
+	project.build();
+	if (project.get_generation() == generation) {
+		return false;
+	}
+	project_rebuilt();
+	return true;
 }
 
 // --- ScriptLanguageExtension ----------------------------------------------------------------------
 
 String AngelScriptLanguage::_get_name() const { return "AngelScript"; }
-void AngelScriptLanguage::_init() { ensure_engine(); }
+void AngelScriptLanguage::_init() {
+	ensure_engine();
+	// Hot reload in the editor and in games run from it, where res:// is the project folder on disk.
+	// Exported games read scripts from the pack and never change.
+	hot_reload = OS::get_singleton()->has_feature("editor");
+	if (hot_reload) {
+		start_watcher();
+	}
+}
 String AngelScriptLanguage::_get_type() const { return "AngelScript"; }
 String AngelScriptLanguage::_get_extension() const { return "as"; }
 
 void AngelScriptLanguage::_finish() {
+	stop_watcher();
 	if (!engine) {
 		return;
 	}
@@ -315,9 +410,10 @@ void *AngelScriptLanguage::_debug_get_stack_level_instance(int32_t p_level) { re
 Dictionary AngelScriptLanguage::_debug_get_globals(int32_t p_max_subitems, int32_t p_max_depth) { return Dictionary(); }
 String AngelScriptLanguage::_debug_parse_stack_level_expression(int32_t p_level, const String &p_expression, int32_t p_max_subitems, int32_t p_max_depth) { return String(); }
 TypedArray<Dictionary> AngelScriptLanguage::_debug_get_current_stack_info() { return TypedArray<Dictionary>(); }
-void AngelScriptLanguage::_reload_all_scripts() {}
-void AngelScriptLanguage::_reload_scripts(const Array &p_scripts, bool p_soft_reload) {}
-void AngelScriptLanguage::_reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) {}
+// The editor asks a running game to reload scripts after they're saved; the files on disk are the truth.
+void AngelScriptLanguage::_reload_all_scripts() { reload_from_disk(); }
+void AngelScriptLanguage::_reload_scripts(const Array &p_scripts, bool p_soft_reload) { reload_from_disk(); }
+void AngelScriptLanguage::_reload_tool_script(const Ref<Script> &p_script, bool p_soft_reload) { reload_from_disk(); }
 
 PackedStringArray AngelScriptLanguage::_get_recognized_extensions() const {
 	PackedStringArray out;
@@ -333,6 +429,45 @@ void AngelScriptLanguage::_profiling_stop() {}
 void AngelScriptLanguage::_profiling_set_save_native_calls(bool p_enable) {}
 int32_t AngelScriptLanguage::_profiling_get_accumulated_data(ScriptLanguageExtensionProfilingInfo *p_info_array, int32_t p_info_max) { return 0; }
 int32_t AngelScriptLanguage::_profiling_get_frame_data(ScriptLanguageExtensionProfilingInfo *p_info_array, int32_t p_info_max) { return 0; }
-void AngelScriptLanguage::_frame() {}
+void AngelScriptLanguage::_frame() {
+	if (!hot_reload) {
+		return;
+	}
+	if (disk_changed.exchange(false)) {
+		reload_from_disk();
+	}
+}
+
+void AngelScriptLanguage::start_watcher() {
+	std::string root = ASProject::project_root();
+	watcher_stop = false;
+	watcher = std::thread([this, root]() {
+		std::map<std::string, uint64_t> previous;
+		ASProject::snapshot(root, previous);
+		std::unique_lock<std::mutex> lock(watcher_mutex);
+		while (!watcher_wake.wait_for(lock, std::chrono::milliseconds(WATCH_INTERVAL_MS), [this]() { return watcher_stop; })) {
+			lock.unlock();
+			std::map<std::string, uint64_t> current;
+			ASProject::snapshot(root, current);
+			if (current != previous) {
+				previous.swap(current);
+				disk_changed = true;
+			}
+			lock.lock();
+		}
+	});
+}
+
+void AngelScriptLanguage::stop_watcher() {
+	if (!watcher.joinable()) {
+		return;
+	}
+	{
+		std::lock_guard<std::mutex> lock(watcher_mutex);
+		watcher_stop = true;
+	}
+	watcher_wake.notify_all();
+	watcher.join();
+}
 bool AngelScriptLanguage::_handles_global_class_type(const String &p_type) const { return false; }
 Dictionary AngelScriptLanguage::_get_global_class_name(const String &p_path) const { return Dictionary(); }

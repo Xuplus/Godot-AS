@@ -1,0 +1,6 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://tests/tool_test_driver.gd" id="1"]
+
+[node name="ToolTest" type="Node"]
+script = ExtResource("1")

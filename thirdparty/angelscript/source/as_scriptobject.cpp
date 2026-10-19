@@ -1068,6 +1068,27 @@ void *asCScriptObject::AllocateUninitializedObject(asCObjectType *in_objType, as
 		ptr = engine->CallAlloc(in_objType);
 		ScriptObject_ConstructUnitialized(in_objType, reinterpret_cast<asCScriptObject*>(ptr));
 	}
+	// GODOT-AS PATCH (value templates): a value-type template instance is constructed in place. The
+	// instance's default constructor is a generated script stub that passes the type to the
+	// registered constructor, so it runs in a context. The branch below is for reference templates,
+	// whose construct behaviour is a factory.
+	else if( (in_objType->flags & asOBJ_TEMPLATE) && (in_objType->flags & asOBJ_VALUE) )
+	{
+		ptr = engine->CallAlloc(in_objType);
+		asCScriptFunction *construct = in_objType->beh.construct ? engine->scriptFunctions[in_objType->beh.construct] : 0;
+		if( construct && construct->sysFuncIntf )
+			engine->CallObjectMethod(ptr, in_objType, in_objType->beh.construct);
+		else if( construct )
+		{
+			asIScriptContext *ctx = engine->RequestContext();
+			if( ctx )
+			{
+				if( ctx->Prepare(construct) >= 0 && ctx->SetObject(ptr) >= 0 )
+					ctx->Execute();
+				engine->ReturnContext(ctx);
+			}
+		}
+	}
 	else if( in_objType->flags & asOBJ_TEMPLATE )
 	{
 		// Templates store the original factory that takes the object

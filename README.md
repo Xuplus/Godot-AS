@@ -4,9 +4,10 @@ AngelScript as a scripting language for Godot 4, in the spirit of
 [UnrealEngine-Angelscript](https://angelscript.hazelight.se/): attach `.as` scripts to nodes,
 call the typed Godot API, iterate fast.
 
-Delivered as a GDExtension (no engine fork). Status: **Phase 2 done**. The whole Godot API is
-bound, script classes extend engine classes directly, and Godot's "Dodge the Creeps" demo runs
-ported to AngelScript (`demo/dodge/`). See [docs/phase2.md](docs/phase2.md) for the language,
+Delivered as a GDExtension (no engine fork). Status: **Phase 3 done**. The whole Godot API is
+bound, script classes extend engine classes directly, scripts hot-reload in a running game, and
+Godot's "Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
+[docs/phase3.md](docs/phase3.md) for hot reload, [docs/phase2.md](docs/phase2.md) for the language,
 [docs/phase1.md](docs/phase1.md) for the bindings, and [docs/phase0.md](docs/phase0.md) for the spike.
 
 ```angelscript
@@ -82,6 +83,16 @@ API and smoke tests (exit code 0 when everything passes):
 godot --headless --path demo res://tests/run_tests.tscn
 ```
 
+Hot reload in a running game, and `[tool]` scripts in the editor:
+
+```bash
+godot --headless --path demo res://tests/hot_reload_test.tscn
+```
+
+```bash
+godot --headless --editor --path demo res://tests/tool_test.tscn
+```
+
 The Dodge the Creeps port, played headlessly:
 
 ```bash
@@ -113,3 +124,11 @@ godot --headless --path demo res://bench/run_bench.tscn
 - `default z_index = 3;` in a class body sets an engine property before the constructor runs.
 
 See [docs/phase2.md](docs/phase2.md) for details and how `await` differs from GDScript.
+
+## Hot reload
+
+Run the game from the editor, edit a `.as` file anywhere (VS Code, Godot's script editor) and save.
+Within a fraction of a second the running game uses the new code. Every live instance keeps its
+field values; new fields get their initializer. If the file doesn't compile, the error is reported
+and the game keeps running the last good version. `[tool]` scripts reload the same way in the
+editor. See [docs/phase3.md](docs/phase3.md).

@@ -14,3 +14,6 @@ demo/.godot/
 
 # Generated binding tables (built by SCons from extension_api.json)
 src/gen/
+
+# Scratch scripts written (and removed) by the hot reload tests
+demo/tests/hot/
