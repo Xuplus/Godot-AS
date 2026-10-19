@@ -13,12 +13,18 @@ func check(cond: bool, what: String) -> void:
 		printerr("  FAIL ", what)
 
 
-func wait_seconds(seconds: float) -> void:
-	await get_tree().create_timer(seconds, true, false, true).timeout
+# Waits until `cond` holds or `seconds` of real time pass. An exported game in a background browser
+# tab can get a few frames per second, so the test waits for what it checks, not for a fixed time.
+func wait_until(cond: Callable, seconds: float) -> void:
+	var deadline := Time.get_ticks_msec() + int(seconds * 1000)
+	while not cond.call() and Time.get_ticks_msec() < deadline:
+		await get_tree().process_frame
 
 
 func _ready() -> void:
 	print("== Dodge the Creeps (AngelScript port)")
+	# Startup cost of registering the Godot API, also reported from exported games (Web, Android).
+	print("AngelScript startup: %s on %s" % [AngelScriptLanguage.get_startup_stats(), OS.get_name()])
 	Engine.time_scale = 4.0
 	var main: Node = load("res://dodge/main.tscn").instantiate()
 	add_child(main)
@@ -32,7 +38,7 @@ func _ready() -> void:
 	# A random mob can hit the player before the first score tick. The test hits the player itself below.
 	main.get_node("Player").monitoring = false
 
-	await wait_seconds(4.0)
+	await wait_until(func(): return get_tree().get_nodes_in_group("mobs").size() > 0 and int(main.get("score")) >= 1, 60.0)
 	var mobs := get_tree().get_nodes_in_group("mobs")
 	check(mobs.size() > 0, "mobs spawn (%d)" % mobs.size())
 	check(int(main.get("score")) >= 1, "score increases (%d)" % int(main.get("score")))
@@ -45,7 +51,7 @@ func _ready() -> void:
 	check(not main.get_node("Player").visible, "player hides when hit")
 	check(hud.get_node("MessageLabel").text == "Game Over", "game over message")
 
-	await wait_seconds(4.0)
+	await wait_until(func(): return hud.get_node("MessageLabel").text != "Game Over", 60.0)
 	check(hud.get_node("MessageLabel").text == "Dodge the\nCreeps", "title comes back after the message timer")
 	check(hud.get_node("StartButton").visible, "start button comes back after the delay")
 

@@ -79,6 +79,7 @@ class AngelScriptEditorPlugin : public EditorPlugin {
 	GDCLASS(AngelScriptEditorPlugin, EditorPlugin);
 
 	Ref<AngelScriptSyntaxHighlighter> highlighter;
+	Ref<class AngelScriptExportPlugin> export_plugin;
 
 protected:
 	static void _bind_methods() {}

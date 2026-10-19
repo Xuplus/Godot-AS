@@ -1739,6 +1739,17 @@ void asCReader::ReadTypeDeclaration(asCTypeInfo *type, int phase, bool *isExtern
 					ot->derivedFrom->AddRefInternal();
 			}
 
+			// GODOT-AS PATCH (native base classes): the registered type a script class inherits
+			if( type->flags & asOBJ_SCRIPT_OBJECT )
+			{
+				asCObjectType *nb = CastToObjectType(ReadTypeInfo());
+				if( nb && !sharedExists )
+				{
+					ot->nativeBase = nb;
+					nb->AddRefInternal();
+				}
+			}
+
 			// interfaces[] / interfaceVFTOffsets[]
 			int size = SanityCheck(ReadEncodedUInt(), 1000000);
 			if( sharedExists )
@@ -4551,6 +4562,10 @@ void asCWriter::WriteTypeDeclaration(asCTypeInfo *type, int phase)
 		{
 			asCObjectType *t = CastToObjectType(type);
 			WriteTypeInfo(t->derivedFrom);
+
+			// GODOT-AS PATCH (native base classes): the registered type a script class inherits
+			if( type->flags & asOBJ_SCRIPT_OBJECT )
+				WriteTypeInfo(t->nativeBase);
 
 			// interfaces[] / interfaceVFTOffsets[]
 			// TOOD: Is it really necessary to store the VFTOffsets? Can't the reader calculate those?

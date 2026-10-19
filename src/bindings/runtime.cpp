@@ -692,18 +692,30 @@ void for_end(asIScriptGeneric *g) { g->SetReturnByte((int64_t)g->GetArgQWord(0) 
 
 void array_index(asIScriptGeneric *g) {
 	void *r = gdextension_interface::array_operator_index(g->GetObject(), (GDExtensionInt)g->GetArgQWord(0));
-	r ? g->SetReturnAddress(r) : index_out_of_range();
+	if (r) {
+		g->SetReturnAddress(r);
+	} else {
+		index_out_of_range();
+	}
 }
 
 void dictionary_index(asIScriptGeneric *g) {
 	void *r = gdextension_interface::dictionary_operator_index(g->GetObject(), g->GetArgAddress(0));
-	r ? g->SetReturnAddress(r) : index_out_of_range();
+	if (r) {
+		g->SetReturnAddress(r);
+	} else {
+		index_out_of_range();
+	}
 }
 
 template <typename F>
 void packed_index(asIScriptGeneric *g, F p_fn) {
 	void *r = (void *)p_fn(g->GetObject(), (GDExtensionInt)g->GetArgQWord(0));
-	r ? g->SetReturnAddress(r) : index_out_of_range();
+	if (r) {
+		g->SetReturnAddress(r);
+	} else {
+		index_out_of_range();
+	}
 }
 
 void packed_byte_index(asIScriptGeneric *g) { packed_index(g, gdextension_interface::packed_byte_array_operator_index); }

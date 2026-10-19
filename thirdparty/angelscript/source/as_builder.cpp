@@ -1740,26 +1740,25 @@ int asCBuilder::CheckNameConflict(const char *name, asCScriptNode *node, asCScri
 	}
 
 	// Property names must be checked against function names
+	// GODOT-AS PATCH (perf): look the name up in the symbol table instead of scanning every registered
+	// global function. Each registered method reaches here through the namespace named after its
+	// class (CheckNameConflictMember), so the scan ran once per method.
 	if (isProperty)
 	{
-		for (asUINT n = 0; n < engine->registeredGlobalFuncs.GetSize(); n++)
+		if (engine->registeredGlobalFuncs.GetIndexes(ns, asCString(name)).GetLength() > 0)
 		{
-			if (engine->registeredGlobalFuncs.Get(n)->name == name &&
-				engine->registeredGlobalFuncs.Get(n)->nameSpace == ns)
+			if (code)
 			{
-				if (code)
-				{
-					asCString str;
-					if (ns->name != "")
-						str = ns->name + "::" + name;
-					else
-						str = name;
-					str.Format(TXT_NAME_CONFLICT_s_IS_FUNCTION, str.AddressOf());
-					WriteError(str, code, node);
-				}
-
-				return -1;
+				asCString str;
+				if (ns->name != "")
+					str = ns->name + "::" + name;
+				else
+					str = name;
+				str.Format(TXT_NAME_CONFLICT_s_IS_FUNCTION, str.AddressOf());
+				WriteError(str, code, node);
 			}
+
+			return -1;
 		}
 	}
 

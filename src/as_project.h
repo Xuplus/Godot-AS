@@ -3,6 +3,7 @@
 #include "as_source.h"
 
 #include <godot_cpp/templates/hash_map.hpp>
+#include <godot_cpp/variant/packed_byte_array.hpp>
 #include <godot_cpp/variant/dictionary.hpp>
 #include <godot_cpp/variant/string.hpp>
 #include <godot_cpp/variant/string_name.hpp>
@@ -69,6 +70,18 @@ struct ASCompiledClass {
 	~ASCompiledClass();
 };
 
+// Script metadata ([export], [signal], [tool]): by script type name, and by type name and property
+// index for properties. Captured from CScriptBuilder after a compile, or read from a package.
+struct ASMetadata {
+	std::map<std::string, std::vector<std::string>> types;
+	std::map<std::pair<std::string, int>, std::vector<std::string>> properties;
+
+	void capture(asIScriptModule *p_module, class CScriptBuilder &p_builder);
+	const std::vector<std::string> &for_type(asITypeInfo *p_type) const;
+	// Property `p_index` of `p_type`, looked up on the script class that declares it.
+	const std::vector<std::string> &for_property(asITypeInfo *p_type, int p_index) const;
+};
+
 // A file's main class as the editor lists it (global classes), read from the source alone.
 struct ASClassSummary {
 	String name;
@@ -88,7 +101,15 @@ class ASProject {
 		String processed;
 		assrc::SourceInfo info;
 		uint64_t mtime = 0; // file_stamp() when `source` was read
+		Dictionary export_defaults; // from a package: there's no source to evaluate initializers in
 	};
+
+	// Exported games run from a package (see make_package) instead of compiling sources.
+	bool package_mode = false;
+	PackedByteArray package_bytecode;
+	ASMetadata package_metadata;
+	bool load_package();
+	bool build_from_package();
 
 	mutable std::recursive_mutex mutex;
 	std::map<String, File> files;
@@ -108,11 +129,21 @@ class ASProject {
 	void ensure_scanned();
 	static File make_file(const String &p_source);
 	bool build_module(const std::map<String, File> &p_files, const String &p_module_name, asIScriptModule **r_module, class CScriptBuilder &r_builder) const;
-	bool publish(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::map<String, File> &p_files);
-	std::shared_ptr<ASCompiledClass> make_class(asIScriptModule *p_module, CScriptBuilder &p_builder, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file, const std::map<String, File> &p_files) const;
+	bool publish(asIScriptModule *p_module, const ASMetadata &p_metadata, const std::map<String, File> &p_files);
+	std::shared_ptr<ASCompiledClass> make_class(asIScriptModule *p_module, const ASMetadata &p_metadata, const std::shared_ptr<ASModuleHandle> &p_handle, const String &p_path, const File &p_file, const std::map<String, File> &p_files) const;
 
 public:
 	static ASProject &get();
+
+	// Where an exported game finds its compiled scripts. The export plugin writes it and leaves the
+	// .as files as stubs, so scenes still reference them by path.
+	static constexpr const char *PACKAGE_PATH = "res://angelscript.asbin";
+	static constexpr const char *STUB_SOURCE = "// Compiled into angelscript.asbin when the project was exported.\n";
+
+	// Compiles every .as file and serializes the result for an exported game: bytecode, the metadata
+	// and declarations the class tables need, and export defaults. Empty (with r_error) on errors.
+	PackedByteArray make_package(String &r_error);
+	bool is_package_mode() const { return package_mode; }
 
 	// Every .as file under the folder `p_root`, relative path -> file_stamp. Uses no Godot API, so
 	// it's safe on any thread (the hot reload watcher).

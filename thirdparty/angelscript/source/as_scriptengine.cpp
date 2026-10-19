@@ -663,6 +663,7 @@ asCScriptEngine::asCScriptEngine()
 	shuttingDown = false;
 	inDestructor = false;
 	nativeBaseHandler = 0; // GODOT-AS PATCH (native base classes)
+	lastRegisteredEnum = 0; // GODOT-AS PATCH (perf)
 	methodRefFactory = 0; // GODOT-AS PATCH (method references)
 
 	// Engine properties
@@ -5855,6 +5856,7 @@ void asCScriptEngine::ReleaseScriptObject(void *obj, const asITypeInfo *type)
 // interface
 int asCScriptEngine::BeginConfigGroup(const char *groupName)
 {
+	lastRegisteredEnum = 0; // GODOT-AS PATCH (perf): the cached enum belongs to the previous group
 	// Make sure the group name doesn't already exist
 	for( asUINT n = 0; n < configGroups.GetLength(); n++ )
 	{
@@ -5880,6 +5882,7 @@ int asCScriptEngine::BeginConfigGroup(const char *groupName)
 // interface
 int asCScriptEngine::EndConfigGroup()
 {
+	lastRegisteredEnum = 0; // GODOT-AS PATCH (perf): the cached enum belongs to the previous group
 	// Raise error if trying to end the default config
 	if( currentGroup == &defaultGroup )
 		return asERROR;
@@ -5892,6 +5895,7 @@ int asCScriptEngine::EndConfigGroup()
 // interface
 int asCScriptEngine::RemoveConfigGroup(const char *groupName)
 {
+	lastRegisteredEnum = 0; // GODOT-AS PATCH (perf): the cached enum belongs to the previous group
 	// It is not allowed to remove a group that is still in use.
 
 	// It would be possible to change the code in such a way that
@@ -6385,6 +6389,7 @@ int asCScriptEngine::RegisterEnum(const char *name)
 	registeredEnums.PushLast(st);
 
 	currentGroup->types.PushLast(st);
+	lastRegisteredEnum = st; // GODOT-AS PATCH (perf)
 
 	return GetTypeIdByDecl(name);
 }
@@ -6392,6 +6397,13 @@ int asCScriptEngine::RegisterEnum(const char *name)
 // interface
 int asCScriptEngine::RegisterEnumValue(const char *typeName, const char *valueName, int value)
 {
+	// GODOT-AS PATCH (perf): values almost always follow their RegisterEnum. For that enum, skip the
+	// linear search of the config group (every registered type) and the parse of its name.
+	asCEnumType *ot = 0;
+	if( lastRegisteredEnum && lastRegisteredEnum->nameSpace == defaultNamespace && lastRegisteredEnum->name == typeName )
+		ot = lastRegisteredEnum;
+	else
+	{
 	// Verify that the correct config group is used
 	if( currentGroup->FindType(typeName) == 0 )
 		return ConfigError(asWRONG_CONFIG_GROUP, "RegisterEnumValue", typeName, valueName);
@@ -6404,9 +6416,10 @@ int asCScriptEngine::RegisterEnumValue(const char *typeName, const char *valueNa
 		return ConfigError(r, "RegisterEnumValue", typeName, valueName);
 
 	// Store the enum value
-	asCEnumType *ot = CastToEnumType(dt.GetTypeInfo());
+	ot = CastToEnumType(dt.GetTypeInfo());
 	if( ot == 0 )
 		return ConfigError(asINVALID_TYPE, "RegisterEnumValue", typeName, valueName);
+	}
 
 	if( NULL == valueName )
 		return ConfigError(asINVALID_NAME, "RegisterEnumValue", typeName, valueName);

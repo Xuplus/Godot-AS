@@ -17,3 +17,6 @@ src/gen/
 
 # Scratch scripts written (and removed) by the hot reload tests
 demo/tests/hot/
+
+# Exported games (tools: see docs/phase6.md)
+build/

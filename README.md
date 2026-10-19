@@ -4,11 +4,13 @@ AngelScript as a scripting language for Godot 4, in the spirit of
 [UnrealEngine-Angelscript](https://angelscript.hazelight.se/): attach `.as` scripts to nodes,
 call the typed Godot API, iterate fast.
 
-Delivered as a GDExtension (no engine fork). Status: **Phase 4 done**. The whole Godot API is
-bound, script classes extend engine classes directly, scripts hot-reload in a running game, and the
+Delivered as a GDExtension (no engine fork). Status: **Phase 6 done**. The whole Godot API is
+bound, script classes extend engine classes directly, scripts hot-reload in a running game, the
 Godot editor has completion, error markers, global classes, help pages and the debugger for `.as`
-files. Godot's "Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
-[docs/phase4.md](docs/phase4.md) for the editor, [docs/phase3.md](docs/phase3.md) for hot reload,
+files, and exported games run on Windows, the web and Android with precompiled scripts. Godot's
+"Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
+[docs/phase6.md](docs/phase6.md) for shipping, [docs/phase4.md](docs/phase4.md) for the editor,
+[docs/phase3.md](docs/phase3.md) for hot reload,
 [docs/phase2.md](docs/phase2.md) for the language, [docs/phase1.md](docs/phase1.md) for the bindings,
 and [docs/phase0.md](docs/phase0.md) for the spike.
 
@@ -70,6 +72,24 @@ python -m SCons target=editor
 
 This generates the binding tables and writes `demo/bin/libgodot_as.windows.editor.x86_64.dll`.
 The extension isn't hot-reloadable, so restart the Godot editor after rebuilding.
+
+For exported games, build the libraries of each target (`template_release`, and `template_debug`
+for debug exports):
+
+```bash
+python -m SCons target=template_release
+```
+
+```bash
+python -m SCons platform=web threads=no target=template_release
+```
+
+```bash
+python -m SCons platform=android arch=arm64 target=template_release
+```
+
+The web build needs Emscripten 4.0.11 (emsdk) on the PATH; Android needs `ANDROID_HOME` and NDK
+28.1. See [docs/phase6.md](docs/phase6.md).
 
 ## Running the tests and benchmarks
 
@@ -148,6 +168,17 @@ See [docs/phase2.md](docs/phase2.md) for details and how `await` differs from GD
   break where they happen.
 
 See [docs/phase4.md](docs/phase4.md), including what debugging costs.
+
+## Shipping
+
+Export the project as usual. The AngelScript export plugin compiles the scripts into
+`angelscript.asbin` and leaves the `.as` files out (as one-line stubs), so the game starts without
+compiling and the sources aren't shipped. `demo/export_presets.cfg` has Windows, Web and Android
+presets; `tools/export_demo.py` exports the demo with any scene as main scene, for testing:
+
+```bash
+python tools/export_demo.py --scene res://tests/dodge_test.tscn --run "Windows Desktop"
+```
 
 ## Hot reload
 

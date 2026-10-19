@@ -1,6 +1,7 @@
 #include "as_language.h"
 #include "as_resource_format.h"
 #include "as_script.h"
+#include "editor/as_export_plugin.h"
 #include "editor/as_syntax_highlighter.h"
 
 #include <gdextension_interface.h>
@@ -22,6 +23,7 @@ static void initialize_angelscript(ModuleInitializationLevel p_level) {
 #ifdef TOOLS_ENABLED
 	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
 		GDREGISTER_CLASS(AngelScriptSyntaxHighlighter);
+		GDREGISTER_INTERNAL_CLASS(AngelScriptExportPlugin);
 		GDREGISTER_INTERNAL_CLASS(AngelScriptEditorPlugin);
 		EditorPlugins::add_by_type<AngelScriptEditorPlugin>();
 		return;

@@ -14,6 +14,10 @@ as_env = env.Clone()
 as_env.Append(CPPPATH=["thirdparty/angelscript/include"])
 # godot-cpp builds with exceptions disabled; AngelScript must not try to catch them either.
 as_env.Append(CPPDEFINES=["AS_NO_EXCEPTIONS"])
+# Everything is registered with the generic calling convention, so AngelScript needs no native call
+# glue. On the web it's always off (as_config.h); on Android it saves the per-ABI assembly.
+if env["platform"] == "android":
+    as_env.Append(CPPDEFINES=["AS_MAX_PORTABILITY"])
 if as_env.get("is_msvc", False):
     as_env.Append(CCFLAGS=["/w"])  # third-party code, silence warnings
 else:

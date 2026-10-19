@@ -16,6 +16,8 @@ still help with the ~18,000 that remain.
 | `FindVirtualPropertyAccessor`: find the matching get/set accessor in the type's own method list (registered types) or by name in the global function table (registered globals), instead of scanning every function in the engine. Script-declared accessors keep the original search. | `source/as_builder.cpp`, `as_builder.h` | Registration from 45 s to under 2 s |
 | `CheckNameConflictMember`: iterate the type's methods in place (it copied the array on every call) and compare accessor names without allocating a substring. `CheckNameConflict`: look up `get_<name>`/`set_<name>` in the symbol table instead of scanning all global functions. | `source/as_builder.cpp` | About 0.4 s less |
 | `FindNameSpace`: map lookup (`nameSpaceLookup`) instead of a linear search over all namespaces. Every engine class has a namespace for its enums and constants, so this ran ~1,000 string compares per registered method. | `source/as_scriptengine.cpp`, `as_scriptengine.h` | About 0.5 s less |
+| `CheckNameConflict`: when checking a property-like name against functions, look it up in the registered-functions symbol table instead of scanning all of them. Every registered method gets here through the namespace named after its class, so the scan ran once per method. | `source/as_builder.cpp` | About 150 ms less (name checks 115 → 13 ms, accessor validation 52 → 10 ms) |
+| `RegisterEnumValue`: values usually follow their `RegisterEnum`; for that enum (`lastRegisteredEnum`), skip the linear search of the config group's types and the parse of the enum name. Reset when config groups change. | `source/as_scriptengine.cpp`, `as_scriptengine.h` | About 110 ms less |
 
 These are good candidates to send upstream.
 
@@ -53,8 +55,10 @@ answers whether the native type has a virtual method of a given name.
 The `__self` handle is marked ref-safe, so calls through it don't copy the handle into a temporary:
 the native object owns the script object and outlives every use of it.
 
-Not covered yet: saving and loading bytecode (`as_restore.cpp`) doesn't store `nativeBase`; shared
-classes can't have a native base.
+Saved bytecode (`as_restore.cpp`) stores a script class's `nativeBase` after its base class, and
+loading restores it, so precompiled scripts keep their native bases. The type flags, including
+`asOBJ_IMPLICIT_HANDLE`, were already saved. Bytecode saved by an unpatched AngelScript can't be
+read, and the other way round. Shared classes can't have a native base.
 
 ## Method references
 

@@ -464,6 +464,7 @@ public:
 	asCArray<asSNameSpace*> nameSpaces;
 	asCMap<asCString, asSNameSpace*> nameSpaceLookup; // GODOT-AS PATCH (perf): index for FindNameSpace
 	asINativeBaseHandler *nativeBaseHandler; // GODOT-AS PATCH (native base classes)
+	asCEnumType *lastRegisteredEnum; // GODOT-AS PATCH (perf): see RegisterEnumValue
 	int methodRefFactory; // GODOT-AS PATCH (method references)
 
 	// Callbacks for context pooling

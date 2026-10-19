@@ -2,6 +2,7 @@
 
 #include "as_syntax_highlighter.h"
 
+#include "as_export_plugin.h"
 #include "as_language.h"
 
 #include <godot_cpp/classes/class_db_singleton.hpp>
@@ -299,12 +300,18 @@ AngelScriptSyntaxHighlighter::LineState AngelScriptSyntaxHighlighter::highlight_
 void AngelScriptEditorPlugin::_enter_tree() {
 	highlighter.instantiate();
 	EditorInterface::get_singleton()->get_script_editor()->register_syntax_highlighter(highlighter);
+	export_plugin.instantiate();
+	add_export_plugin(export_plugin);
 }
 
 void AngelScriptEditorPlugin::_exit_tree() {
 	if (highlighter.is_valid()) {
 		EditorInterface::get_singleton()->get_script_editor()->unregister_syntax_highlighter(highlighter);
 		highlighter.unref();
+	}
+	if (export_plugin.is_valid()) {
+		remove_export_plugin(export_plugin);
+		export_plugin.unref();
 	}
 }
 
