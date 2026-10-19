@@ -1,0 +1,13 @@
+# SCons
+.sconsign*.dblite
+*.obj
+*.o
+*.os
+*.lib
+*.exp
+*.pdb
+*.ilk
+
+# Built extension and Godot's per-project cache
+demo/bin/
+demo/.godot/

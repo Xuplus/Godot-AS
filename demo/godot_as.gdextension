@@ -1,0 +1,14 @@
+[configuration]
+
+entry_symbol = "godot_as_library_init"
+compatibility_minimum = "4.5"
+reloadable = false
+
+[libraries]
+
+windows.editor.x86_64 = "res://bin/libgodot_as.windows.editor.x86_64.dll"
+windows.debug.x86_64 = "res://bin/libgodot_as.windows.template_debug.x86_64.dll"
+windows.release.x86_64 = "res://bin/libgodot_as.windows.template_release.x86_64.dll"
+linux.editor.x86_64 = "res://bin/libgodot_as.linux.editor.x86_64.so"
+linux.debug.x86_64 = "res://bin/libgodot_as.linux.template_debug.x86_64.so"
+linux.release.x86_64 = "res://bin/libgodot_as.linux.template_release.x86_64.so"
