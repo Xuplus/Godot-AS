@@ -12,6 +12,7 @@ struct AngelScriptInstance {
 	Ref<AngelScript> script;
 	std::shared_ptr<ASCompiledClass> compiled;
 	asIScriptObject *object = nullptr;
+	GDExtensionScriptInstancePtr godot_instance = nullptr; // Godot's ScriptInstance wrapping this one
 
 	// Calls a script method with Variant arguments, as Godot does for virtuals and `call()`.
 	void call(const StringName &p_method, const GDExtensionConstVariantPtr *p_args, GDExtensionInt p_argcount, Variant &r_ret, GDExtensionCallError &r_error);
@@ -43,6 +44,9 @@ struct AngelScriptInstance {
 	// Ends a replaced script object: cancels its pending awaits and cuts its link to the owner.
 	static void retire(asIScriptObject *p_old);
 	static AngelScriptInstance *from_owner(GDExtensionObjectPtr p_owner);
+
+	// True while the running script has called await() and is about to suspend.
+	static bool await_pending();
 };
 
 // Owns GDExtensionPropertyInfo arrays handed to Godot until it frees them.

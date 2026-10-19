@@ -415,7 +415,8 @@ GDExtensionScriptInstancePtr AngelScriptInstance::create(const Ref<AngelScript> 
 	inst->script = p_script;
 	inst->compiled = compiled;
 	inst->object = obj;
-	return gdextension_interface::script_instance_create3(&instance_info, inst);
+	inst->godot_instance = gdextension_interface::script_instance_create3(&instance_info, inst);
+	return inst->godot_instance;
 }
 
 GDExtensionObjectPtr AngelScriptInstance::construct_owner(asIScriptObject *p_object, asITypeInfo *p_native_base) {
@@ -554,6 +555,10 @@ bool variant_compatible(int p_type_id) {
 }
 
 } // namespace
+
+bool AngelScriptInstance::await_pending() {
+	return suspending != nullptr;
+}
 
 AngelScriptInstance *AngelScriptInstance::from_owner(GDExtensionObjectPtr p_owner) {
 	void *data = gdextension_interface::object_get_script_instance(p_owner, AngelScriptLanguage::get_singleton()->_owner);

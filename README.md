@@ -4,11 +4,13 @@ AngelScript as a scripting language for Godot 4, in the spirit of
 [UnrealEngine-Angelscript](https://angelscript.hazelight.se/): attach `.as` scripts to nodes,
 call the typed Godot API, iterate fast.
 
-Delivered as a GDExtension (no engine fork). Status: **Phase 3 done**. The whole Godot API is
-bound, script classes extend engine classes directly, scripts hot-reload in a running game, and
-Godot's "Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
-[docs/phase3.md](docs/phase3.md) for hot reload, [docs/phase2.md](docs/phase2.md) for the language,
-[docs/phase1.md](docs/phase1.md) for the bindings, and [docs/phase0.md](docs/phase0.md) for the spike.
+Delivered as a GDExtension (no engine fork). Status: **Phase 4 done**. The whole Godot API is
+bound, script classes extend engine classes directly, scripts hot-reload in a running game, and the
+Godot editor has completion, error markers, global classes, help pages and the debugger for `.as`
+files. Godot's "Dodge the Creeps" demo runs ported to AngelScript (`demo/dodge/`). See
+[docs/phase4.md](docs/phase4.md) for the editor, [docs/phase3.md](docs/phase3.md) for hot reload,
+[docs/phase2.md](docs/phase2.md) for the language, [docs/phase1.md](docs/phase1.md) for the bindings,
+and [docs/phase0.md](docs/phase0.md) for the spike.
 
 ```angelscript
 class Player : Area2D
@@ -48,7 +50,7 @@ class Player : Area2D
 |---|---|
 | `tools/generate_bindings.py` | Turns Godot's `extension_api.json` into binding tables (run by SCons) |
 | `src/bindings/` | Runtime that registers the tables with AngelScript: generic thunks, object proxies, Variant conversion, `TypedArray<T>` |
-| `src/` | The script language: language, script, instance (and coroutines), project module, dialect source pass, `.as` loader/saver |
+| `src/` | The script language: language (and debugger), script, instance (and coroutines), project module, dialect source pass, `.as` loader/saver, source outline, completion and lookup |
 | `src/editor/` | Script editor syntax highlighting |
 | `thirdparty/angelscript/` | AngelScript 2.38.0 with patches for performance, inheritance from engine classes and the dialect ([PATCHES.md](thirdparty/angelscript/PATCHES.md)) |
 | `thirdparty/godot-cpp/` | godot-cpp 10.0.0 (submodule), targeting the Godot 4.5 API |
@@ -93,6 +95,16 @@ godot --headless --path demo res://tests/hot_reload_test.tscn
 godot --headless --editor --path demo res://tests/tool_test.tscn
 ```
 
+Editor integration (completion, error markers, global classes, templates, docs) and the debugger:
+
+```bash
+godot --headless --editor --path demo res://tests/editor_test.tscn
+```
+
+```bash
+godot --headless --path demo res://tests/debugger_test.tscn
+```
+
 The Dodge the Creeps port, played headlessly:
 
 ```bash
@@ -124,6 +136,18 @@ godot --headless --path demo res://bench/run_bench.tscn
 - `default z_index = 3;` in a class body sets an engine property before the constructor runs.
 
 See [docs/phase2.md](docs/phase2.md) for details and how `await` differs from GDScript.
+
+## In the editor
+
+- Every file's main class is a global class: it's in the Add Node dialog, and GDScript can name it.
+- The New Script dialog has AngelScript templates (Node, Object, CharacterBody2D/3D).
+- The script editor completes members, namespaces, locals and Godot virtuals to override, shows
+  call hints, marks errors as you type, and Ctrl+click goes to definitions or Godot's help.
+- `///` comments on a class and its members become its page in Godot's help.
+- Breakpoints, stepping, the call stack and locals work in Godot's debugger, and script errors
+  break where they happen.
+
+See [docs/phase4.md](docs/phase4.md), including what debugging costs.
 
 ## Hot reload
 

@@ -1,9 +1,11 @@
 #include "as_project.h"
 
 #include "as_language.h"
+#include "as_outline.h"
 #include "bindings/api_data.h"
 #include "bindings/runtime.h"
 
+#include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
 #include <godot_cpp/classes/file_access.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
@@ -549,6 +551,7 @@ bool ASProject::publish(asIScriptModule *p_module, CScriptBuilder &p_builder, co
 		}
 	}
 	classes = new_classes;
+	latest_module = handle;
 	generation++;
 	return true;
 }
@@ -596,9 +599,80 @@ bool ASProject::validate(const String &p_path, const String &p_source) const {
 	return ok;
 }
 
+std::shared_ptr<ASModuleHandle> ASProject::get_latest_module() const {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	return latest_module;
+}
+
+String ASProject::find_class_path(const String &p_name) const {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	const_cast<ASProject *>(this)->ensure_scanned();
+	CharString name = p_name.utf8();
+	for (const auto &kv : files) {
+		for (const assrc::ClassDecl &decl : kv.second.info.classes) {
+			if (decl.name == name.get_data()) {
+				return kv.first;
+			}
+		}
+	}
+	return String();
+}
+
+std::string ASProject::find_class_base(const std::string &p_name) const {
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	const_cast<ASProject *>(this)->ensure_scanned();
+	for (const auto &kv : files) {
+		for (const assrc::ClassDecl &decl : kv.second.info.classes) {
+			if (decl.name == p_name) {
+				return decl.base;
+			}
+		}
+	}
+	return std::string();
+}
+
+bool ASProject::summarize(const String &p_path, const String &p_source, ASClassSummary &r_summary) const {
+	CharString text = p_source.utf8();
+	asoutline::Outline outline = asoutline::parse(std::string(text.get_data(), text.length()));
+	auto extends_engine = [&](const asoutline::Class &p_class) {
+		std::string base = p_class.base;
+		for (int guard = 0; guard < 32 && !base.empty(); guard++) {
+			if (ClassDBSingleton::get_singleton()->class_exists(StringName(base.c_str()))) {
+				return true;
+			}
+			const asoutline::Class *local = outline.find_class(base);
+			base = local ? local->base : find_class_base(base);
+		}
+		return false;
+	};
+	CharString basename = p_path.get_file().get_basename().utf8();
+	const asoutline::Class *main = outline.main_class(basename.get_data(), extends_engine);
+	if (!main) {
+		return false;
+	}
+	r_summary.name = String::utf8(main->name.c_str());
+	r_summary.base = String::utf8(main->base.c_str());
+	r_summary.is_abstract = main->is_abstract;
+	r_summary.line = main->line;
+	for (const std::string &m : main->metadata) {
+		String meta = String::utf8(m.c_str()).strip_edges();
+		if (meta == "tool") {
+			r_summary.tool = true;
+		} else if (meta.begins_with("icon")) {
+			int q1 = meta.find("\"");
+			int q2 = q1 >= 0 ? meta.find("\"", q1 + 1) : -1;
+			if (q2 > q1) {
+				r_summary.icon_path = meta.substr(q1 + 1, q2 - q1 - 1);
+			}
+		}
+	}
+	return true;
+}
+
 void ASProject::clear() {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	classes.clear();
+	latest_module.reset();
 	files.clear();
 	scanned = false;
 	built_once = false;

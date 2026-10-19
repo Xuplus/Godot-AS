@@ -90,8 +90,26 @@ public:
 	// Like execute(), but returns the asEXECUTION_* status (a suspended context isn't an error).
 	int run(asIScriptContext *p_ctx);
 
+	// --- Debugger (games run from the editor) ------------------------------------------------
+	// With Godot's debugger attached, every context gets a line callback (breakpoints, stepping)
+	// and an exception callback (break on script errors). Without it, scripts run untouched.
+	bool debugger_active = false;
+	String debug_error;
+	void enable_debugging(asIScriptContext *p_ctx);
+	static void debug_line_callback(asIScriptContext *p_ctx, AngelScriptLanguage *p_self);
+	void debug_line(asIScriptContext *p_ctx);
+	static void debug_exception_callback(asIScriptContext *p_ctx, AngelScriptLanguage *p_self);
+	// Breaks into Godot's debugger on this thread, which runs its loop until the user continues.
+	void debug_break(const String &p_error, bool p_is_error);
+
 	// Startup cost of registering the Godot API: { "registration_ms", "registration_errors" }.
 	static Dictionary get_startup_stats();
+	static Dictionary complete_code(const String &p_code, const String &p_path);
+	static Dictionary lookup_code(const String &p_code, const String &p_symbol, const String &p_path);
+	static TypedArray<Dictionary> get_templates(const StringName &p_base_class);
+	static String fill_template(const String &p_content, const String &p_class_name, const String &p_base_class);
+	// The help pages Godot's editor gets for a script's class (ClassDoc dictionaries).
+	static TypedArray<Dictionary> get_documentation(const Ref<Script> &p_script);
 
 	AngelScriptLanguage();
 	~AngelScriptLanguage();

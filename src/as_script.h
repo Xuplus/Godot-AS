@@ -23,6 +23,12 @@ class AngelScript : public ScriptExtension {
 	mutable std::shared_ptr<ASCompiledClass> compiled;
 	mutable uint64_t compiled_generation = 0;
 
+	// The file's main class as read from `source` (see ASProject::summarize), cached per text.
+	mutable ASClassSummary summary;
+	mutable String summary_source;
+	mutable String summary_path;
+	const ASClassSummary &get_summary() const;
+
 	mutable std::mutex instances_mutex;
 	HashSet<GDExtensionObjectPtr> instance_owners;
 	HashSet<void *> placeholders;

@@ -65,7 +65,9 @@ func frames(n: int) -> void:
 
 
 func _ready() -> void:
-	if not Engine.is_editor_hint():
+	# Only when launched for the test. The editor also reopens scenes from its saved layout (yours
+	# too), and this would then run its checks and quit the editor.
+	if not Engine.is_editor_hint() or not OS.get_cmdline_args().has("res://tests/tool_test.tscn"):
 		return
 	print("== AngelScript tool script test (editor)")
 	DirAccess.make_dir_recursive_absolute(DIR)

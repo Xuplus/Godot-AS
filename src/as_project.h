@@ -69,6 +69,16 @@ struct ASCompiledClass {
 	~ASCompiledClass();
 };
 
+// A file's main class as the editor lists it (global classes), read from the source alone.
+struct ASClassSummary {
+	String name;
+	String base; // as written: a Godot class or another script class
+	bool tool = false;
+	bool is_abstract = false;
+	String icon_path; // from `[icon("res://...")]`
+	int line = 0;
+};
+
 // All .as files of the project compile into one module, the way UnrealEngine-Angelscript does, so
 // classes can use each other across files. A change to any file rebuilds the module (milliseconds).
 // Files that fail to compile keep their last good class, so the rest of the project moves on.
@@ -87,6 +97,7 @@ class ASProject {
 	uint64_t generation = 0;
 	uint64_t module_counter = 0;
 	HashMap<String, std::shared_ptr<ASCompiledClass>> classes;
+	std::shared_ptr<ASModuleHandle> latest_module;
 
 	void scan_directory(const String &p_dir);
 	// Every .as file under res:// with its file_stamp().
@@ -131,6 +142,17 @@ public:
 	bool evaluate_initializer(const ASCompiledClass &p_class, const String &p_field, int p_type_id, Variant &r_value) const;
 
 	String get_source(const String &p_path) const;
+
+	// The module of the latest build, the newest compiled view of every class (editor features
+	// read types from it). Null before the first successful build.
+	std::shared_ptr<ASModuleHandle> get_latest_module() const;
+	// The file that declares class `p_name`, from the sources (compiled or not); empty if none.
+	String find_class_path(const String &p_name) const;
+	// The base class `p_name` is declared with, as written; empty if it has none or is unknown.
+	std::string find_class_base(const std::string &p_name) const;
+	// The main class of `p_source` (the text of `p_path`) without compiling: the class named after
+	// the file, otherwise the first one extending a Godot class. Safe on the editor's scan threads.
+	bool summarize(const String &p_path, const String &p_source, ASClassSummary &r_summary) const;
 
 	// Compiles everything with `p_source` standing in for `p_path`, without keeping the result.
 	bool validate(const String &p_path, const String &p_source) const;
