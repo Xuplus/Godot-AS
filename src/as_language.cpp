@@ -63,6 +63,7 @@ void AngelScriptLanguage::ensure_engine() {
 
 	type_id_string = engine->GetTypeIdByDecl("String");
 	type_id_vector2 = engine->GetTypeIdByDecl("Vector2");
+	type_id_vector3 = engine->GetTypeIdByDecl("Vector3");
 	type_id_native_object = engine->GetTypeIdByDecl("native::Object");
 }
 

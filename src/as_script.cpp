@@ -217,7 +217,20 @@ StringName AngelScript::_get_instance_base_type() const {
 	return compiled ? compiled->native_base : StringName("Object");
 }
 
+bool AngelScript::check_base_type(Object *p_for_object) const {
+	// The generated bindings call the base type's methods on the owner without checking, so
+	// attaching to an unrelated class would be undefined behavior. Same rule as GDScript.
+	StringName base = _get_instance_base_type();
+	ERR_FAIL_COND_V_MSG(!p_for_object->is_class(base), false,
+			vformat("Script '%s' inherits from native type '%s', so it can't be assigned to an object of type '%s'.",
+					get_script_path(), base, p_for_object->get_class()));
+	return true;
+}
+
 void *AngelScript::_instance_create(Object *p_for_object) const {
+	if (!check_base_type(p_for_object)) {
+		return nullptr;
+	}
 	AngelScript *self = const_cast<AngelScript *>(this);
 	GDExtensionScriptInstancePtr instance = AngelScriptInstance::create(Ref<AngelScript>(self), p_for_object->_owner);
 	if (instance) {
@@ -228,6 +241,9 @@ void *AngelScript::_instance_create(Object *p_for_object) const {
 }
 
 void *AngelScript::_placeholder_instance_create(Object *p_for_object) const {
+	if (!check_base_type(p_for_object)) {
+		return nullptr;
+	}
 	AngelScript *self = const_cast<AngelScript *>(this);
 	GDExtensionScriptInstancePtr placeholder = gdextension_interface::placeholder_script_instance_create(
 			AngelScriptLanguage::get_singleton()->_owner, _owner, p_for_object->_owner);

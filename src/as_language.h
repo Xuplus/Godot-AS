@@ -41,6 +41,7 @@ public:
 	// Type ids of registered types, cached after registration.
 	int type_id_string = 0;
 	int type_id_vector2 = 0;
+	int type_id_vector3 = 0;
 	int type_id_native_object = 0;
 
 	asIScriptEngine *get_engine();

@@ -24,9 +24,19 @@ Verified by `demo/tests/run_tests.gd` (19 checks, all passing):
   backtrace, and don't take the node down.
 - The project opens in the editor (headless) with no errors.
 
-**Not verified yet:** the editor UI: attaching a script from the inspector, exports appearing
-on placeholder instances, error markers in the script editor. The code paths exist
-(`_placeholder_instance_create`, `_validate`), but they need a manual check in the GUI.
+Checked by hand in the editor: attaching a script from the inspector, and `[export]` fields
+showing on placeholder instances. Error markers in the script editor are not checked yet.
+
+Fixes from that first editor session:
+
+- A script is now rejected when attached to a node that doesn't inherit its base type (same
+  rule and message as GDScript). Before, a `Node2D` script on a `MeshInstance3D` called Node2D
+  methods on a 3D node, which is undefined behavior: Godot reported
+  `canvas_item_set_transform: Parameter "canvas_item" is null` every frame.
+- Added `Node3D` and `Vector3` bindings (`demo/tests/spinner_3d.as`, `demo/playground_3d.tscn`).
+- Added an AngelScript syntax highlighter (`src/editor/`). Godot selects it automatically for
+  `.as` files. A file that was already open before it existed keeps the editor's saved choice
+  until you pick *Edit > Syntax Highlighter > AngelScript* once.
 
 ## Benchmarks
 

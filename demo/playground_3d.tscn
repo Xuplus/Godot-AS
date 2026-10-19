@@ -1,0 +1,17 @@
+[gd_scene format=3]
+
+[ext_resource type="Script" path="res://tests/spinner_3d.as" id="1_spin"]
+
+[sub_resource type="BoxMesh" id="BoxMesh_ai4q4"]
+
+[node name="Playground3D" type="Node3D"]
+
+[node name="Node" type="Node" parent="."]
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="."]
+mesh = SubResource("BoxMesh_ai4q4")
+skeleton = NodePath("../Node")
+script = ExtResource("1_spin")
+
+[node name="Camera3D" type="Camera3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.0005662441, 0, 5.2717996)

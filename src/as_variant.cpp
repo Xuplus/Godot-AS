@@ -45,6 +45,9 @@ Variant::Type as_type_to_variant_type(int p_type_id) {
 	if (p_type_id == lang()->type_id_vector2) {
 		return Variant::VECTOR2;
 	}
+	if (p_type_id == lang()->type_id_vector3) {
+		return Variant::VECTOR3;
+	}
 	if (is_native_handle(p_type_id)) {
 		return Variant::OBJECT;
 	}
@@ -72,6 +75,10 @@ bool as_value_to_variant(const void *p_ptr, int p_type_id, Variant &r_value) {
 	}
 	if (p_type_id == lang()->type_id_vector2) {
 		r_value = *(const Vector2 *)p_ptr;
+		return true;
+	}
+	if (p_type_id == lang()->type_id_vector3) {
+		r_value = *(const Vector3 *)p_ptr;
 		return true;
 	}
 	if (is_native_handle(p_type_id)) {
@@ -105,6 +112,10 @@ bool variant_to_as_value(const Variant &p_value, void *p_ptr, int p_type_id) {
 		*(Vector2 *)p_ptr = p_value;
 		return true;
 	}
+	if (p_type_id == lang()->type_id_vector3) {
+		*(Vector3 *)p_ptr = p_value;
+		return true;
+	}
 	if (is_native_handle(p_type_id)) {
 		Object *obj = p_value;
 		*(GDExtensionObjectPtr *)p_ptr = obj ? obj->_owner : nullptr;
@@ -134,6 +145,8 @@ bool set_context_arg(asIScriptContext *p_ctx, asUINT p_index, int p_type_id, asD
 			p_storage.destroy_type[slot] = DESTROY_STRING;
 		} else if (p_type_id == lang()->type_id_vector2) {
 			new (mem) Vector2();
+		} else if (p_type_id == lang()->type_id_vector3) {
+			new (mem) Vector3();
 		} else {
 			return false;
 		}

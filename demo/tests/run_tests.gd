@@ -6,6 +6,7 @@ var failures := 0
 var frames := 0
 var from_code: Node2D
 var from_scene: Node2D
+var spinner: MeshInstance3D
 
 
 func check(cond: bool, what: String) -> void:
@@ -43,6 +44,19 @@ func _ready() -> void:
 	check(from_scene.get("lives") == 7, "scene-stored export override applied")
 	check(from_scene.get("title") == "scene", "scene-stored String export applied")
 
+	spinner = MeshInstance3D.new()
+	spinner.set_script(load("res://tests/spinner_3d.as"))
+	add_child(spinner)
+	check(spinner.has_method("_process"), "Node3D script attaches to a MeshInstance3D")
+	check(spinner.get("bob") == Vector3(0, 0.5, 0), "Vector3 export default")
+
+	print("  (expected) the next error rejects a Node2D script on a 3D node:")
+	var wrong := MeshInstance3D.new()
+	wrong.set_script(script)
+	add_child(wrong)
+	check(not wrong.has_method("get_ticks"), "Node2D script is not instantiated on a MeshInstance3D")
+	wrong.queue_free()
+
 	print("  (expected) the next error is a deliberate script exception:")
 	from_code.call("crash")
 	check(from_code.get_script() == script, "node survives a script exception")
@@ -56,5 +70,7 @@ func _process(_delta: float) -> void:
 	check(ticks >= 9, "_process called every frame (ticks=%d)" % ticks)
 	check(from_code.position.x > 10.0, "_process moved the node (x=%.1f)" % from_code.position.x)
 	check(from_code.rotation > 0.0, "_process rotated the node")
+	check(spinner.rotation.y > 0.0, "3D _process rotated the mesh (y=%.3f)" % spinner.rotation.y)
+	check(spinner.position.y != 0.0, "3D _process moved the mesh (y=%.3f)" % spinner.position.y)
 	print("== %s" % ("ALL PASSED" if failures == 0 else "%d FAILED" % failures))
 	get_tree().quit(1 if failures else 0)

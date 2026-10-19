@@ -8,6 +8,7 @@
 #include <godot_cpp/variant/string_name.hpp>
 #include <godot_cpp/variant/utility_functions.hpp>
 #include <godot_cpp/variant/vector2.hpp>
+#include <godot_cpp/variant/vector3.hpp>
 
 #include <cmath>
 #include <cstring>
@@ -196,6 +197,64 @@ void register_vector2(asIScriptEngine *e) {
 	CHECK(e->RegisterObjectMethod("Vector2", "void __sub_assign_generic(const Vector2 &in)", asFUNCTION(vector2_sub_assign_generic), asCALL_GENERIC));
 }
 
+// --- Vector3 --------------------------------------------------------------------------------------
+
+void vector3_construct(void *p_mem) { new (p_mem) Vector3(); }
+void vector3_construct_xyz(float p_x, float p_y, float p_z, void *p_mem) { new (p_mem) Vector3(p_x, p_y, p_z); }
+void vector3_copy_construct(const Vector3 &p_other, void *p_mem) { new (p_mem) Vector3(p_other); }
+Vector3 vector3_add(const Vector3 &p_other, const Vector3 *p_self) { return *p_self + p_other; }
+Vector3 vector3_sub(const Vector3 &p_other, const Vector3 *p_self) { return *p_self - p_other; }
+Vector3 vector3_mul(float p_scalar, const Vector3 *p_self) { return *p_self * p_scalar; }
+Vector3 vector3_mul_v(const Vector3 &p_other, const Vector3 *p_self) { return *p_self * p_other; }
+Vector3 vector3_div(float p_scalar, const Vector3 *p_self) { return *p_self / p_scalar; }
+Vector3 vector3_neg(const Vector3 *p_self) { return -*p_self; }
+Vector3 &vector3_add_assign(const Vector3 &p_other, Vector3 *p_self) {
+	*p_self += p_other;
+	return *p_self;
+}
+Vector3 &vector3_sub_assign(const Vector3 &p_other, Vector3 *p_self) {
+	*p_self -= p_other;
+	return *p_self;
+}
+Vector3 &vector3_mul_assign(float p_scalar, Vector3 *p_self) {
+	*p_self *= p_scalar;
+	return *p_self;
+}
+bool vector3_equals(const Vector3 &p_other, const Vector3 *p_self) { return *p_self == p_other; }
+float vector3_length(const Vector3 *p_self) { return p_self->length(); }
+float vector3_length_squared(const Vector3 *p_self) { return p_self->length_squared(); }
+Vector3 vector3_normalized(const Vector3 *p_self) { return p_self->normalized(); }
+float vector3_dot(const Vector3 &p_other, const Vector3 *p_self) { return p_self->dot(p_other); }
+Vector3 vector3_cross(const Vector3 &p_other, const Vector3 *p_self) { return p_self->cross(p_other); }
+float vector3_distance_to(const Vector3 &p_other, const Vector3 *p_self) { return p_self->distance_to(p_other); }
+
+void register_vector3(asIScriptEngine *e) {
+	CHECK(e->RegisterObjectType("Vector3", sizeof(Vector3), asOBJ_VALUE | asOBJ_POD | asOBJ_APP_CLASS_ALLFLOATS | asGetTypeTraits<Vector3>()));
+	CHECK(e->RegisterObjectProperty("Vector3", "float x", (int)offsetof(Vector3, x)));
+	CHECK(e->RegisterObjectProperty("Vector3", "float y", (int)offsetof(Vector3, y)));
+	CHECK(e->RegisterObjectProperty("Vector3", "float z", (int)offsetof(Vector3, z)));
+	CHECK(e->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f()", asFUNCTION(vector3_construct), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(float, float, float)", asFUNCTION(vector3_construct_xyz), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectBehaviour("Vector3", asBEHAVE_CONSTRUCT, "void f(const Vector3 &in)", asFUNCTION(vector3_copy_construct), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opAdd(const Vector3 &in) const", asFUNCTION(vector3_add), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opSub(const Vector3 &in) const", asFUNCTION(vector3_sub), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opMul(float) const", asFUNCTION(vector3_mul), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opMul_r(float) const", asFUNCTION(vector3_mul), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opMul(const Vector3 &in) const", asFUNCTION(vector3_mul_v), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opDiv(float) const", asFUNCTION(vector3_div), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 opNeg() const", asFUNCTION(vector3_neg), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 &opAddAssign(const Vector3 &in)", asFUNCTION(vector3_add_assign), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 &opSubAssign(const Vector3 &in)", asFUNCTION(vector3_sub_assign), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 &opMulAssign(float)", asFUNCTION(vector3_mul_assign), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "bool opEquals(const Vector3 &in) const", asFUNCTION(vector3_equals), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "float length() const", asFUNCTION(vector3_length), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "float length_squared() const", asFUNCTION(vector3_length_squared), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 normalized() const", asFUNCTION(vector3_normalized), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "float dot(const Vector3 &in) const", asFUNCTION(vector3_dot), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "Vector3 cross(const Vector3 &in) const", asFUNCTION(vector3_cross), asCALL_CDECL_OBJLAST));
+	CHECK(e->RegisterObjectMethod("Vector3", "float distance_to(const Vector3 &in) const", asFUNCTION(vector3_distance_to), asCALL_CDECL_OBJLAST));
+}
+
 // --- Globals --------------------------------------------------------------------------------------
 
 void as_print(const String &p_text) { UtilityFunctions::print(p_text); }
@@ -240,6 +299,18 @@ MethodBind mb_node2d_get_global_position = { "Node2D", "get_global_position", 33
 MethodBind mb_node2d_set_global_position = { "Node2D", "set_global_position", 743155724 };
 MethodBind mb_node2d_rotate = { "Node2D", "rotate", 373806689 };
 MethodBind mb_node2d_translate = { "Node2D", "translate", 743155724 };
+MethodBind mb_node3d_get_position = { "Node3D", "get_position", 3360562783 };
+MethodBind mb_node3d_set_position = { "Node3D", "set_position", 3460891852 };
+MethodBind mb_node3d_get_rotation = { "Node3D", "get_rotation", 3360562783 };
+MethodBind mb_node3d_set_rotation = { "Node3D", "set_rotation", 3460891852 };
+MethodBind mb_node3d_get_scale = { "Node3D", "get_scale", 3360562783 };
+MethodBind mb_node3d_set_scale = { "Node3D", "set_scale", 3460891852 };
+MethodBind mb_node3d_get_global_position = { "Node3D", "get_global_position", 3360562783 };
+MethodBind mb_node3d_set_global_position = { "Node3D", "set_global_position", 3460891852 };
+MethodBind mb_node3d_rotate_x = { "Node3D", "rotate_x", 373806689 };
+MethodBind mb_node3d_rotate_y = { "Node3D", "rotate_y", 373806689 };
+MethodBind mb_node3d_rotate_z = { "Node3D", "rotate_z", 373806689 };
+MethodBind mb_node3d_translate = { "Node3D", "translate", 3460891852 };
 
 inline void ptrcall(MethodBind &p_mb, GDExtensionObjectPtr p_self, const GDExtensionConstTypePtr *p_args, GDExtensionTypePtr r_ret) {
 	gdextension_interface::object_method_bind_ptrcall(p_mb.get(), p_self, p_args, r_ret);
@@ -302,6 +373,32 @@ float node2d_get_rotation(GDExtensionObjectPtr p_self) {
 	return (float)ret;
 }
 
+Vector3 node_get_vector3(MethodBind &p_mb, GDExtensionObjectPtr p_self) {
+	CHECK_SELF(Vector3());
+	Vector3 ret;
+	ptrcall(p_mb, p_self, nullptr, &ret);
+	return ret;
+}
+
+void node_set_vector3(MethodBind &p_mb, GDExtensionObjectPtr p_self, const Vector3 &p_value) {
+	CHECK_SELF(void());
+	const GDExtensionConstTypePtr args[] = { &p_value };
+	ptrcall(p_mb, p_self, args, nullptr);
+}
+
+Vector3 node3d_get_position(GDExtensionObjectPtr p_self) { return node_get_vector3(mb_node3d_get_position, p_self); }
+void node3d_set_position(GDExtensionObjectPtr p_self, const Vector3 &p_value) { node_set_vector3(mb_node3d_set_position, p_self, p_value); }
+Vector3 node3d_get_rotation(GDExtensionObjectPtr p_self) { return node_get_vector3(mb_node3d_get_rotation, p_self); }
+void node3d_set_rotation(GDExtensionObjectPtr p_self, const Vector3 &p_value) { node_set_vector3(mb_node3d_set_rotation, p_self, p_value); }
+Vector3 node3d_get_scale(GDExtensionObjectPtr p_self) { return node_get_vector3(mb_node3d_get_scale, p_self); }
+void node3d_set_scale(GDExtensionObjectPtr p_self, const Vector3 &p_value) { node_set_vector3(mb_node3d_set_scale, p_self, p_value); }
+Vector3 node3d_get_global_position(GDExtensionObjectPtr p_self) { return node_get_vector3(mb_node3d_get_global_position, p_self); }
+void node3d_set_global_position(GDExtensionObjectPtr p_self, const Vector3 &p_value) { node_set_vector3(mb_node3d_set_global_position, p_self, p_value); }
+void node3d_translate(GDExtensionObjectPtr p_self, const Vector3 &p_value) { node_set_vector3(mb_node3d_translate, p_self, p_value); }
+void node3d_rotate_x(GDExtensionObjectPtr p_self, float p_value) { node2d_set_float(mb_node3d_rotate_x, p_self, p_value); }
+void node3d_rotate_y(GDExtensionObjectPtr p_self, float p_value) { node2d_set_float(mb_node3d_rotate_y, p_self, p_value); }
+void node3d_rotate_z(GDExtensionObjectPtr p_self, float p_value) { node2d_set_float(mb_node3d_rotate_z, p_self, p_value); }
+
 // Benchmark variant 1: AngelScript's generic calling convention (portable, works on WebAssembly).
 void node2d_get_position_generic(asIScriptGeneric *p_gen) {
 	GDExtensionObjectPtr self = p_gen->GetArgObject(0);
@@ -350,6 +447,18 @@ void register_native(asIScriptEngine *e) {
 	CHECK(e->RegisterGlobalFunction("void Node2D_set_position_generic(Object@, const Vector2 &in)", asFUNCTION(node2d_set_position_generic), asCALL_GENERIC));
 	CHECK(e->RegisterGlobalFunction("Vector2 Node2D_get_position_variant(Object@)", asFUNCTION(node2d_get_position_variant), asCALL_CDECL));
 	CHECK(e->RegisterGlobalFunction("void Node2D_set_position_variant(Object@, const Vector2 &in)", asFUNCTION(node2d_set_position_variant), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("Vector3 Node3D_get_position(Object@)", asFUNCTION(node3d_get_position), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_set_position(Object@, const Vector3 &in)", asFUNCTION(node3d_set_position), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("Vector3 Node3D_get_rotation(Object@)", asFUNCTION(node3d_get_rotation), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_set_rotation(Object@, const Vector3 &in)", asFUNCTION(node3d_set_rotation), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("Vector3 Node3D_get_scale(Object@)", asFUNCTION(node3d_get_scale), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_set_scale(Object@, const Vector3 &in)", asFUNCTION(node3d_set_scale), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("Vector3 Node3D_get_global_position(Object@)", asFUNCTION(node3d_get_global_position), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_set_global_position(Object@, const Vector3 &in)", asFUNCTION(node3d_set_global_position), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_translate(Object@, const Vector3 &in)", asFUNCTION(node3d_translate), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_rotate_x(Object@, float)", asFUNCTION(node3d_rotate_x), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_rotate_y(Object@, float)", asFUNCTION(node3d_rotate_y), asCALL_CDECL));
+	CHECK(e->RegisterGlobalFunction("void Node3D_rotate_z(Object@, float)", asFUNCTION(node3d_rotate_z), asCALL_CDECL));
 	CHECK(e->SetDefaultNamespace(""));
 }
 
@@ -389,6 +498,22 @@ shared abstract class Node2D : Node
 	Vector2 __get_position_variant() const { return native::Node2D_get_position_variant(__owner); }
 	void __set_position_variant(const Vector2 &in value) { native::Node2D_set_position_variant(__owner, value); }
 }
+
+shared abstract class Node3D : Node
+{
+	Vector3 get_position() const property { return native::Node3D_get_position(__owner); }
+	void set_position(const Vector3 &in value) property { native::Node3D_set_position(__owner, value); }
+	Vector3 get_rotation() const property { return native::Node3D_get_rotation(__owner); }
+	void set_rotation(const Vector3 &in value) property { native::Node3D_set_rotation(__owner, value); }
+	Vector3 get_scale() const property { return native::Node3D_get_scale(__owner); }
+	void set_scale(const Vector3 &in value) property { native::Node3D_set_scale(__owner, value); }
+	Vector3 get_global_position() const property { return native::Node3D_get_global_position(__owner); }
+	void set_global_position(const Vector3 &in value) property { native::Node3D_set_global_position(__owner, value); }
+	void rotate_x(float radians) { native::Node3D_rotate_x(__owner, radians); }
+	void rotate_y(float radians) { native::Node3D_rotate_y(__owner, radians); }
+	void rotate_z(float radians) { native::Node3D_rotate_z(__owner, radians); }
+	void translate(const Vector3 &in offset) { native::Node3D_translate(__owner, offset); }
+}
 )AS";
 
 } // namespace
@@ -396,6 +521,7 @@ shared abstract class Node2D : Node
 void register_core_bindings(asIScriptEngine *p_engine) {
 	register_string(p_engine);
 	register_vector2(p_engine);
+	register_vector3(p_engine);
 	register_globals(p_engine);
 	register_native(p_engine);
 }
@@ -411,7 +537,7 @@ bool is_shim_type(const asITypeInfo *p_type) {
 		return false;
 	}
 	const char *name = p_type->GetName();
-	return strcmp(name, "Object") == 0 || strcmp(name, "Node") == 0 || strcmp(name, "Node2D") == 0;
+	return strcmp(name, "Object") == 0 || strcmp(name, "Node") == 0 || strcmp(name, "Node2D") == 0 || strcmp(name, "Node3D") == 0;
 }
 
 void set_pending_owner(GDExtensionObjectPtr p_owner) { pending_owner = p_owner; }

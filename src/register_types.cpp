@@ -1,8 +1,10 @@
 #include "as_language.h"
 #include "as_resource_format.h"
 #include "as_script.h"
+#include "editor/as_syntax_highlighter.h"
 
 #include <gdextension_interface.h>
+#include <godot_cpp/classes/editor_plugin_registration.hpp>
 #include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/resource_loader.hpp>
 #include <godot_cpp/classes/resource_saver.hpp>
@@ -17,6 +19,14 @@ static Ref<ResourceFormatLoaderAngelScript> loader;
 static Ref<ResourceFormatSaverAngelScript> saver;
 
 static void initialize_angelscript(ModuleInitializationLevel p_level) {
+#ifdef TOOLS_ENABLED
+	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		GDREGISTER_CLASS(AngelScriptSyntaxHighlighter);
+		GDREGISTER_INTERNAL_CLASS(AngelScriptEditorPlugin);
+		EditorPlugins::add_by_type<AngelScriptEditorPlugin>();
+		return;
+	}
+#endif
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}
@@ -36,6 +46,12 @@ static void initialize_angelscript(ModuleInitializationLevel p_level) {
 }
 
 static void uninitialize_angelscript(ModuleInitializationLevel p_level) {
+#ifdef TOOLS_ENABLED
+	if (p_level == MODULE_INITIALIZATION_LEVEL_EDITOR) {
+		EditorPlugins::remove_by_type<AngelScriptEditorPlugin>();
+		return;
+	}
+#endif
 	if (p_level != MODULE_INITIALIZATION_LEVEL_SCENE) {
 		return;
 	}

@@ -58,6 +58,7 @@ class AngelScript : public ScriptExtension {
 	HashSet<void *> placeholders;
 
 	void update_placeholder(void *p_placeholder) const;
+	bool check_base_type(Object *p_for_object) const;
 
 protected:
 	static void _bind_methods() {}
