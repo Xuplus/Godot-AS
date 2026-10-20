@@ -96,6 +96,7 @@ All `.as` files under `res://` compile into one module, like UE-AS. Classes see 
 - **Main class of a file:** the one named after the file, otherwise the first class extending an engine class.
 - **Metadata:** `[export]` and `[signal]` are CScriptBuilder metadata. Export defaults come from compiling the field's initializer expression; constructors are never run for defaults. `[signal] Signal x;` fields are filled with the owner's signal at instance creation.
 - **Calls from Godot:** `AngelScriptInstance::call` uses a per-thread context pool. Contexts are deliberately not `Unprepare`d, to keep AngelScript's fast path; this is safe because instance teardown releases `__self` first. A context suspended by `await` leaves the pool until it finishes.
+  - Calls are prepared and run with `asJitPrepareMethod` / `asJitExecute` (AngelScript patch "aot entry"): `Prepare` that only resets the frame when the context last ran the same method, and `Execute` that calls a method's compiled code directly. Without a debugger, `run()` skips the running-context stack (only the debugger reads it).
   - Methods are found with `ASCompiledClass::find_method`, keyed on the StringName's data pointer: godot-cpp's own StringName hash and `==` are calls into the engine. Parameter and return handling is worked out per method at build time (`ASCompiledClass::Method`).
   - The context borrows the script object (`SetObjectBorrowed`, an AngelScript patch). An instance freed during a call leaves its reference to the outermost call running that object (`release_instance_object`); nothing in `call` may read the instance after `run_context`.
   - Per-thread state on this path (context pool, active calls) is plain arrays, not `std::vector`: see the thread_local note under Debugger.
@@ -142,6 +143,7 @@ On in editor builds only (`OS::has_feature("editor")`, so also games run from th
 - **Promoted locals:** frame variables whose address never escapes (`A()` poisons PSF/LDV/VAR/helper-accessed ones, by the variable extents from `asJitGetVariables`) live in C++ locals; `AOT_SYNC_fnN()` writes them back before every exit and helper call, and every entry reloads them.
 - **Direct calls into Godot** (`direct_call`): CALLSYS of a known binding thunk (`asrt::thunk_kind`, `runtime.cpp` / `typed_array.cpp`) becomes C++ that reads the arguments off the stack at the offsets `CallGeneric` uses, then calls Godot and sets the registers as `asCGeneric` would. Each path `break`s to the VM's way (`asJitCallSystem`) when it can't do the call (null object, unresolved method, out of range). Adding a thunk kind means mirroring the thunk exactly.
 - **Script calls** (`asJitCall`/`asJitReturn`): the VM's frame setup, then the callee's compiled code called directly (`MAX_CALL_DEPTH` 64); anything unusual returns to the VM.
+- **Calls from Godot** enter a method's compiled code directly (`asJitExecute`), and finish at its RET without the interpreter.
 - AngelScript side: the `aot helpers` patch (`as_jit_helpers.cpp`). Package bytecode is pointer-size specific: the editor generates 64-bit code; the web needs a 32-bit game build to generate.
 
 ### Editor (`src/editor/`)

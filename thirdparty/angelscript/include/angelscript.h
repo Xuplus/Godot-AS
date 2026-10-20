@@ -1520,6 +1520,12 @@ struct asSJitCallInfo
 	int   cleanArgs;     // arguments the VM releases or frees after the call
 };
 bool asJitGetCallInfo(asIScriptFunction *func, asSJitCallInfo *info);
+// GODOT-AS PATCH (aot entry): Prepare() + SetObjectBorrowed(), and Execute(), for calls into a
+// script method from the application. asJitExecute calls the function's compiled code directly when
+// it starts at the first instruction, skipping the interpreter's entry and exit. Both behave exactly
+// like the stock functions (which they fall back to) and return the same codes.
+int asJitPrepareMethod(asIScriptContext *ctx, asIScriptFunction *func, void *obj);
+int asJitExecute(asIScriptContext *ctx);
 
 // Byte code instructions
 enum asEBCInstr

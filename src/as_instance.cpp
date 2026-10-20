@@ -498,13 +498,13 @@ void AngelScriptInstance::call(const StringName &p_method, const GDExtensionCons
 
 	AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
 	asIScriptContext *ctx = lang->acquire_context();
-	ctx->Prepare(method->fn);
 	// No reference from the context: this instance holds one, and if the instance is freed during the
 	// call, run_context keeps it until the call returns (release_instance_object). Saves two atomic
 	// reference count changes per call. With no room to track the call, the context takes one.
 	if (active_count < MAX_ACTIVE_CALLS) {
-		ctx->SetObjectBorrowed(object);
+		asJitPrepareMethod(ctx, method->fn, object); // Prepare + SetObjectBorrowed, minus repeated setup
 	} else {
+		ctx->Prepare(method->fn);
 		ctx->SetObject(object);
 	}
 	// The instance can be freed while the script runs: nothing below may read `this` or `method`.

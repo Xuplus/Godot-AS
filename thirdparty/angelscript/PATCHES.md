@@ -134,6 +134,26 @@ per call, about 7 ns.
 
 Files: `include/angelscript.h`, `source/as_context.cpp`, `source/as_context.h`.
 
+## AOT entry
+
+Two functions for calls from the application into a script method, used by Godot-AS for every call
+from Godot (`AngelScriptInstance::call`, `AngelScriptLanguage::run`):
+
+- `asJitPrepareMethod(ctx, func, obj)` is `Prepare(func)` + `SetObjectBorrowed(obj)`. When the context
+  last ran the same function to the end, on a borrowed object, and returned nothing that needs
+  cleaning up, it only resets the frame.
+- `asJitExecute(ctx)` is `Execute()`. When the function (or, for a virtual method, the object's
+  override) has ahead-of-time compiled code starting at its first instruction, it calls that code
+  directly instead of entering the interpreter, and finishes when the code stops at the function's
+  RET. If the compiled code hands over mid-function, the VM carries on as in `Execute()`.
+
+Both fall back to the stock functions whenever the fast path doesn't apply: another state, a line
+callback (debugger), a suspend request, automatic garbage collection, delegates and interface
+methods, no compiled code. Together they cut a call from Godot into a compiled method from about 29
+to 16 ns.
+
+Files: `include/angelscript.h` (declarations after `asJitGetCallInfo`), `source/as_jit_helpers.cpp`.
+
 ## Exact float literals (bug fix)
 
 `asStringScanDouble` summed `digit * 0.1^n`, which rounds at every step: `0.75` became

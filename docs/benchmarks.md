@@ -275,7 +275,51 @@ own times were 0-10% slower than in the baselines, so compare the GD/AS columns.
 
 The other rows stayed within the build-to-build variance. The `_process` row varies the most
 between runs: GDScript's own time for it went from 2.4 to 3.3 ms per frame in the compiled run.
-`binary_trees` is now faster in the VM than compiled (53 vs 70 ms). Not profiled yet; the likely
-cause is the one `fib` has: compiled code calls constructors and script functions through
-`asJitCall` (the VM's frame setup plus its own entry and exit), and with the collector out of the
-way, calls are most of what's left in that benchmark.
+`binary_trees` measured faster in the VM than compiled here (53 vs 70 ms), but a later, quieter run
+of both builds gave 55.8 and 56.9 ms: they're about even. Compiled code calls constructors and
+script functions through `asJitCall` (the VM's frame setup plus its own entry and exit), as for
+`fib`, so it gains little on this benchmark.
+
+## Calls into compiled code
+
+Measured and cut on 2026-10-20, after the two changes above. A temporary C++ loop timed each stage
+of a call from Godot to `noop()` in an exported release with compiled scripts (1M calls, best of 7):
+
+| Stage | Before | After |
+|---|---:|---:|
+| Context pool | 4.0 ns | 4.3 ns |
+| `Prepare` + `SetObjectBorrowed` + `Execute` | ~29 ns | ~16 ns |
+| `run_context` / `run` around it | ~8 ns | ~4 ns |
+| `AngelScriptInstance::call` in all | 48 ns | 34 ns |
+
+**What changed** (AngelScript patch "aot entry", `thirdparty/angelscript/PATCHES.md`):
+- **`asJitExecute`** replaces `Execute`. The VM already ran a compiled method's code from its first
+  instruction, but only after `SetProgramPointer`, entering the interpreter (`ExecuteNext`, a large
+  function), dispatching the JitEntry, and dispatching the RET when the code stopped there. Now the
+  call goes straight into the compiled code and finishes at its RET. When compiled code hands over
+  to the VM mid-function (an error, an instruction it doesn't compile, `await`), the VM carries on
+  as before.
+- **`asJitPrepareMethod`** replaces `Prepare` + `SetObjectBorrowed`. When the pooled context last ran
+  the same method (`_process` on many nodes of one class), it only resets the frame. This helps the
+  VM too.
+- **`run()` skips the running-context stack without a debugger.** Only the debugger reads it.
+
+Results, best of 3 runs (`tools/bench.py --compare` against the baselines):
+
+| Build | Row | Baseline | After the merge | Now | GDScript | GD/AS now |
+|---|---|---:|---:|---:|---:|---:|
+| Release, compiled scripts | 1M calls Godot → script | 106.1 | 83.8 | 60.3 | 50.9 | 0.84x |
+| Release, compiled scripts | 5000 nodes with `_process` (ms/frame) | 2.51 | 2.39 | 2.02 | 2.34 | **1.16x** |
+| Release, compiled scripts | 1M calls, GC objects pending | 367.7 | 81.3 | 66.2 | 50.8 | 0.77x |
+| Release, VM | 1M calls Godot → script | 104.7 | 77.6 | 71.4 | 53.0 | 0.74x |
+| Release, VM | 5000 nodes with `_process` (ms/frame) | 3.49 | 3.19 | 3.19 | 2.57 | 0.81x |
+| Editor | 1M calls Godot → script | 114.7 | — | 77.1 | 97.1 | **1.26x** |
+
+A call into compiled code now costs about 10 ns more than GDScript's. What's left is AngelScript's
+per-call setup (the thread's active-context stack, `PrepareScriptFunction`), the context pool and
+our await bookkeeping.
+
+**The VM's loop rows moved again** in the VM build (`vector_loop_floats` 166 ms, `math_loop` 231 ms,
+against 72 and 161 ms in the previous build). This change doesn't touch the interpreter loop. It's the
+code-layout sensitivity described above, and this time `vector_loop_floats` moved by more than the
+±30% given there. The same rows with compiled scripts didn't move.

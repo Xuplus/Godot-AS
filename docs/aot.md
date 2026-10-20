@@ -118,10 +118,12 @@ Times in ms (`_process` in ms per frame).
   the VM's frame setup (`CallScriptFunction`); compiled code adds its own entry and exit on top.
   It's still 2.6x faster than GDScript. Real C++ calls between compiled functions would need their
   own frame layout.
-- **Calls from Godot into script**, and the garbage collector rows, don't involve compiled code:
-  the cost is in `AngelScriptInstance::call` (method lookup, context preparation, Variant
-  conversion) and in the collector. The `_process` row is the same call path; it's at parity now
-  because the per-node work got cheaper.
+- **Calls from Godot into script**, and the garbage collector rows, didn't involve compiled code
+  when this table was measured: the cost was in `AngelScriptInstance::call` (method lookup, context
+  preparation, Variant conversion) and in the collector. All three have been cut since: calls from
+  Godot now enter compiled code directly, 106 → 60 ms for 1M calls, and 5000 `_process` nodes take
+  2.02 ms per frame against GDScript's 2.34 (see "Calls into compiled code" in
+  [benchmarks.md](benchmarks.md)).
 
 Size: the demo's compiled scripts add 0.6 MB to the Windows DLL (5.2 → 5.8 MB) and 0.8 MB to the
 web module.

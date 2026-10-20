@@ -187,6 +187,121 @@ bool asJitReturn(asSVMRegisters *regs)
 	return true;
 }
 
+// GODOT-AS PATCH (aot entry): calls into script that start in compiled code, without the
+// interpreter's entry and exit. Each falls back to the stock function whenever the fast path
+// doesn't apply.
+
+// In as_context.cpp.
+asCThreadLocalData *asPushActiveContext(asIScriptContext *ctx);
+void asPopActiveContext(asCThreadLocalData *tld, asIScriptContext *ctx);
+
+int asJitPrepareMethod(asIScriptContext *context, asIScriptFunction *function, void *obj)
+{
+	asCContext *ctx = static_cast<asCContext*>(context);
+	asCScriptFunction *func = static_cast<asCScriptFunction*>(function);
+
+	// What Prepare() does when the context last ran the same method to the end, on a borrowed
+	// object, and returned nothing it has to clean up: reset the frame.
+	if( ctx->m_status != asEXECUTION_FINISHED || ctx->m_initialFunction != func || !ctx->m_thisBorrowed ||
+		ctx->m_regs.objectRegister != 0 || ctx->m_returnValueSize != 0 || obj == 0 )
+	{
+		int r = ctx->Prepare(function);
+		if( r < 0 )
+			return r;
+		return ctx->SetObjectBorrowed(obj);
+	}
+
+	ctx->m_regs.stackPointer = ctx->m_originalStackPointer;
+	ctx->m_stackIndex        = ctx->m_originalStackIndex;
+	ctx->m_currentFunction   = func;
+	ctx->m_status            = asEXECUTION_PREPARED;
+	ctx->m_regs.programPointer    = 0;
+	ctx->m_regs.stackFramePointer = ctx->m_regs.stackPointer - ctx->m_argumentsSize;
+	ctx->m_regs.stackPointer      = ctx->m_regs.stackFramePointer;
+	memset(ctx->m_regs.stackPointer, 0, 4*ctx->m_argumentsSize);
+	*(asPWORD*)&ctx->m_regs.stackFramePointer[0] = (asPWORD)obj;
+	return asSUCCESS;
+}
+
+int asJitExecute(asIScriptContext *context)
+{
+	asCContext *ctx = static_cast<asCContext*>(context);
+	if( ctx->m_status != asEXECUTION_PREPARED || ctx->m_regs.programPointer != 0 || ctx->m_lineCallback ||
+		ctx->m_regs.doProcessSuspend || ctx->m_engine->ep.autoGarbageCollect )
+		return ctx->Execute();
+
+	// SetProgramPointer() for a script function or method whose compiled code starts at its first
+	// instruction.
+	asCScriptFunction *func = ctx->m_currentFunction;
+	if( func->funcType == asFUNC_VIRTUAL )
+	{
+		asCScriptObject *obj = *(asCScriptObject**)ctx->m_regs.stackFramePointer;
+		if( obj == 0 || obj->objType->virtualFunctionTable.GetLength() <= (asUINT)func->vfTableIdx )
+			return ctx->Execute();
+		asCScriptFunction *real = obj->objType->virtualFunctionTable[func->vfTableIdx];
+		if( real->signatureId != func->signatureId )
+			return ctx->Execute();
+		func = real;
+	}
+	if( func->funcType != asFUNC_SCRIPT || !func->scriptData->jitFunction )
+		return ctx->Execute();
+	asDWORD *bc = func->scriptData->byteCode.AddressOf();
+	if( asEBCInstr(*(asBYTE*)bc) != asBC_JitEntry || asBC_PTRARG(bc) == 0 )
+		return ctx->Execute();
+
+	asCThreadLocalData *tld = asPushActiveContext(context);
+	if( tld->activeContexts.GetLength() > ctx->m_engine->ep.maxNestedCalls )
+	{
+		asPopActiveContext(tld, context);
+		return ctx->Execute(); // raises the error
+	}
+
+	ctx->m_status = asEXECUTION_ACTIVE;
+	ctx->m_currentFunction = func;
+	ctx->m_regs.programPointer = bc;
+	ctx->PrepareScriptFunction();
+	if( ctx->m_status == asEXECUTION_ACTIVE )
+	{
+		func->scriptData->jitFunction(&ctx->m_regs, asBC_PTRARG(bc));
+
+		// The compiled code stops at the RET of the function it was called for when it ran to the
+		// end, which for the initial function finishes the execution.
+		if( ctx->m_status == asEXECUTION_ACTIVE && ctx->m_callStack.GetLength() == 0 &&
+			asEBCInstr(*(asBYTE*)ctx->m_regs.programPointer) == asBC_RET )
+			ctx->m_status = asEXECUTION_FINISHED;
+
+		// Otherwise the VM carries on from where the compiled code stopped, as in Execute().
+		while( ctx->m_status == asEXECUTION_ACTIVE )
+		{
+			ctx->ExecuteNext();
+			if( ctx->m_status == asEXECUTION_EXCEPTION && ctx->m_exceptionWillBeCaught )
+				ctx->CleanStack(true);
+		}
+	}
+
+	// The end of Execute(), without the line callback and the garbage collector (checked above).
+	ctx->m_regs.doProcessSuspend = false;
+	ctx->m_doSuspend = false;
+	asPopActiveContext(tld, context);
+
+	if( ctx->m_status == asEXECUTION_FINISHED )
+	{
+		ctx->m_regs.objectType = ctx->m_initialFunction->returnType.GetTypeInfo();
+		return asEXECUTION_FINISHED;
+	}
+	if( ctx->m_doAbort )
+	{
+		ctx->m_doAbort = false;
+		ctx->m_status = asEXECUTION_ABORTED;
+		return asEXECUTION_ABORTED;
+	}
+	if( ctx->m_status == asEXECUTION_SUSPENDED )
+		return asEXECUTION_SUSPENDED;
+	if( ctx->m_status == asEXECUTION_EXCEPTION )
+		return asEXECUTION_EXCEPTION;
+	return asERROR;
+}
+
 asUINT asJitGetModuleFunctions(asIScriptModule *module, asIScriptFunction **r_funcs, asUINT max)
 {
 	asCModule *mod = static_cast<asCModule*>(module);

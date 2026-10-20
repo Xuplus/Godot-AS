@@ -107,6 +107,8 @@ public:
 	bool execute(asIScriptContext *p_ctx);
 	// Like execute(), but returns the asEXECUTION_* status (a suspended context isn't an error).
 	int run(asIScriptContext *p_ctx);
+	// Prints the error of an execution that didn't finish; returns p_result.
+	int report_failure(asIScriptContext *p_ctx, int p_result);
 
 	// --- Debugger (games run from the editor) ------------------------------------------------
 	// With Godot's debugger attached, every context gets a line callback (breakpoints, stepping)

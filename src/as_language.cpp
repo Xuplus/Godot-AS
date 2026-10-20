@@ -511,8 +511,17 @@ bool AngelScriptLanguage::execute(asIScriptContext *p_ctx) {
 }
 
 int AngelScriptLanguage::run(asIScriptContext *p_ctx) {
+	if (!debugger_active) {
+		// Execute, straight into the function's compiled code when it has some. The running stack
+		// is only for the debugger.
+		int r = asJitExecute(p_ctx);
+		if (r == asEXECUTION_FINISHED || r == asEXECUTION_SUSPENDED) {
+			return r;
+		}
+		return report_failure(p_ctx, r);
+	}
 	int outer_frames = running_frames();
-	if (debugger_active && running_count == 0) {
+	if (running_count == 0) {
 		refresh_debug_state(); // entering script from the engine: other code may have stepped or polled
 	}
 	// Contexts get their debug callbacks in acquire_context().
@@ -520,7 +529,7 @@ int AngelScriptLanguage::run(asIScriptContext *p_ctx) {
 	if (tracked) {
 		running[running_count++] = { p_ctx, outer_frames };
 	}
-	if (debugger_active && tracked && p_ctx->GetState() == asEXECUTION_SUSPENDED) {
+	if (tracked && p_ctx->GetState() == asEXECUTION_SUSPENDED) {
 		// A coroutine resuming after await: AngelScript passed its next line before suspending.
 		debug_line(p_ctx);
 	}
@@ -528,26 +537,28 @@ int AngelScriptLanguage::run(asIScriptContext *p_ctx) {
 	if (tracked) {
 		running_count--;
 	}
-	if (debugger_active) {
-		// The frames this context had are gone (it finished or suspended).
-		apply_depth_change(outer_frames - debug_state.last_frames);
-		debug_state.last_frames = outer_frames;
-		debug_state.last_ctx = nullptr;
-	}
+	// The frames this context had are gone (it finished or suspended).
+	apply_depth_change(outer_frames - debug_state.last_frames);
+	debug_state.last_frames = outer_frames;
+	debug_state.last_ctx = nullptr;
 	if (r == asEXECUTION_FINISHED || r == asEXECUTION_SUSPENDED) {
 		return r;
 	}
-	if (r == asEXECUTION_EXCEPTION) {
+	return report_failure(p_ctx, r);
+}
+
+int AngelScriptLanguage::report_failure(asIScriptContext *p_ctx, int p_result) {
+	if (p_result == asEXECUTION_EXCEPTION) {
 		const char *section = nullptr;
 		int column = 0;
 		int line = p_ctx->GetExceptionLineNumber(&column, &section);
 		const asIScriptFunction *fn = p_ctx->GetExceptionFunction();
 		String msg = vformat("Script exception: %s (in %s)", String::utf8(p_ctx->GetExceptionString()), String::utf8(fn ? fn->GetDeclaration(true, true) : "?"));
 		_err_print_error(fn ? fn->GetName() : "?", section ? section : "?", line, msg);
-	} else if (r != asEXECUTION_ABORTED) {
-		ERR_PRINT(vformat("AngelScript execution did not finish (code %d).", r));
+	} else if (p_result != asEXECUTION_ABORTED) {
+		ERR_PRINT(vformat("AngelScript execution did not finish (code %d).", p_result));
 	}
-	return r;
+	return p_result;
 }
 
 // --- Scripts --------------------------------------------------------------------------------------
