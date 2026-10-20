@@ -1,0 +1,74 @@
+{
+ "platform": "Web",
+ "arch": "wasm32",
+ "build": "release",
+ "godot": "4.8-dev3 (official)",
+ "results": {
+  "1M calls Godot -> script": {
+   "as": 212.3,
+   "gd": 96.2
+  },
+  "math_loop(10M)": {
+   "as": 395.1,
+   "gd": 733.4
+  },
+  "vector_loop_floats(5M)": {
+   "as": 249.4,
+   "gd": 564.2
+  },
+  "fib(27)": {
+   "as": 35.5,
+   "gd": 132.0
+  },
+  "sieve(2M)": {
+   "as": 386.8,
+   "gd": 168.8
+  },
+  "vector_loop(5M)": {
+   "as": 1092.0,
+   "gd": 342.4
+  },
+  "nbody(25)": {
+   "as": 381.3,
+   "gd": 100.7
+  },
+  "string_ops(500k)": {
+   "as": 204.7,
+   "gd": 82.0
+  },
+  "array_ops(1M)": {
+   "as": 416.9,
+   "gd": 123.7
+  },
+  "dictionary_ops(1M)": {
+   "as": 483.3,
+   "gd": 189.9
+  },
+  "utility_calls(1M)": {
+   "as": 163.2,
+   "gd": 80.9
+  },
+  "engine_get_only(1M)": {
+   "as": 66.8,
+   "gd": 86.2
+  },
+  "engine_calls(1M)": {
+   "as": 262.3,
+   "gd": 166.2
+  },
+  "5000 nodes with _process": {
+   "as": 3.584,
+   "gd": 2.235
+  },
+  "binary_trees(15)": {
+   "as": 117.3,
+   "gd": 211.2
+  },
+  "1M calls, GC objects pending": {
+   "as": 398.1,
+   "gd": 97.5
+  }
+ },
+ "registration_ms": 175.0,
+ "runs": 3
+}

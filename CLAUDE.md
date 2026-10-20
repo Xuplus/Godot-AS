@@ -17,7 +17,8 @@ godot --headless --path demo res://tests/hot_reload_test.tscn            # hot r
 godot --headless --editor --path demo res://tests/tool_test.tscn         # [tool] scripts + placeholders in the editor
 godot --headless --editor --path demo res://tests/editor_test.tscn       # completion, error markers, global classes, templates, docs
 godot --headless --path demo res://tests/debugger_test.tscn               # breakpoints/stepping over Godot's remote debugger protocol
-godot --headless --path demo res://bench/run_bench.tscn   # benchmarks vs typed GDScript
+godot --headless --path demo res://bench/run_bench.tscn   # benchmarks vs typed GDScript (one run)
+python tools/bench.py --compare docs/bench/windows-editor.json   # best of 3, against the pre-AOT baseline (docs/benchmarks.md)
 godot --headless --editor --path demo --quit-after 300    # check the editor opens without errors
 python -m SCons -j16 target=template_release                            # (and template_debug) Windows libraries for exports
 python -m SCons -j16 platform=web threads=no target=template_release    # needs emsdk 4.0.11 on PATH (EMSDK, EM_CONFIG)
@@ -27,6 +28,7 @@ GODOT=F:/Godot/Godot.exe python tools/export_demo.py --scene res://tests/dodge_t
 
 - **Always pass the test scene explicitly.** The demo's main scene is the user's `playground_3d.tscn`, which never quits; don't change it.
 - **Use `--log-file <path>` and read the file.** Godot's stdout is buffered, so a killed or timed-out run loses its prints. `--verbose` adds registration and build timings ("AngelScript: registered … / built …").
+- **Benchmark baselines** are in `docs/bench/*.json` (Windows editor and release, Web), taken before AOT. Don't time `_process` with whole frames (headless Godot paces frames at 6.9 ms) or `Performance.TIME_PROCESS` (a once-per-second maximum); `run_bench.gd` times the process step between a first and a last node.
 - **Running a single test:** each runner is a scene. API checks are `check(...)` calls in `demo/tests/api_test.as`, and dialect checks in `demo/tests/dialect_test.as` (coroutine checks are driven step by step from `run_tests.gd`). For a one-off experiment, add a scene or a `--script` SceneTree script under `demo/` and delete it afterwards.
 - **Editor test drivers run only when their scene is on the command line** (`OS.get_cmdline_args()`): the editor reopens scenes from its saved layout, including in the user's editor, and a driver quits the editor when done.
 - **A headless editor is in "command-line mode"**: Godot doesn't build script help pages there, so docs are tested through `AngelScriptLanguage.get_documentation`. The static `complete_code` / `lookup_code` / `get_templates` / `fill_template` serve tests and tools.

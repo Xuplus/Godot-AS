@@ -131,11 +131,16 @@ The Dodge the Creeps port, played headlessly:
 godot --headless --path demo res://tests/dodge_test.tscn
 ```
 
-Benchmarks against equivalent typed GDScript:
+Benchmarks against equivalent typed GDScript (best of 3 runs, as a Markdown table; `--exe` runs an
+exported game instead, `--compare` shows before/after against saved results):
 
 ```bash
-godot --headless --path demo res://bench/run_bench.tscn
+python tools/bench.py
 ```
+
+Results and what they mean: [docs/benchmarks.md](docs/benchmarks.md). In short, before compiling
+to C++: code that stays in script is 2–5x faster than GDScript, code that works on Godot's types
+(vectors, arrays, strings, engine calls) is 2–5x slower.
 
 ## Writing scripts
 
