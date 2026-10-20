@@ -104,6 +104,9 @@ public:
 
 	// Startup cost of registering the Godot API: { "registration_ms", "registration_errors" }.
 	static Dictionary get_startup_stats();
+	// Writes the project's scripts as C++ for an extension build with compiled scripts (editor only).
+	// Returns counts, or "error".
+	static Dictionary generate_aot(const String &p_path);
 	static Dictionary complete_code(const String &p_code, const String &p_path);
 	static Dictionary lookup_code(const String &p_code, const String &p_symbol, const String &p_path);
 	static TypedArray<Dictionary> get_templates(const StringName &p_base_class);

@@ -584,12 +584,6 @@ void free_defaults(asITypeInfo *p_type) {
 
 // --- builtins -------------------------------------------------------------------------------------------------
 
-struct CtorContext {
-	const Ctor *ctor;
-	GDExtensionPtrConstructor fn;
-	uint32_t vtype;
-};
-
 void builtin_construct(asIScriptGeneric *g) {
 	CtorContext *c = static_cast<CtorContext *>(g->GetAuxiliary());
 	Slot slots[MAX_ARGS];
@@ -621,12 +615,6 @@ void builtin_assign(asIScriptGeneric *g) {
 	}
 	g->SetReturnAddress(self);
 }
-
-struct OpContext {
-	const Operator *op;
-	GDExtensionPtrOperatorEvaluator eval;
-	GDExtensionPtrOperatorEvaluator eval_eq; // for opCmp
-};
 
 void builtin_operator(asIScriptGeneric *g) {
 	OpContext *c = static_cast<OpContext *>(g->GetAuxiliary());
@@ -1235,6 +1223,68 @@ void register_utilities(asIScriptEngine *e) {
 } // namespace
 
 // --- public -------------------------------------------------------------------------------------------------------
+
+Thunk thunk_kind(void *p_function) {
+	struct Entry {
+		asGENFUNC_t fn;
+		Thunk kind;
+	};
+	static const Entry entries[] = {
+		{ builtin_operator, Thunk::OPERATOR },
+		{ thunk_object_method, Thunk::OBJECT_METHOD },
+		{ thunk_static, Thunk::STATIC_METHOD },
+		{ thunk_singleton, Thunk::SINGLETON_METHOD },
+		{ thunk_builtin_method, Thunk::BUILTIN_METHOD },
+		{ builtin_construct, Thunk::CONSTRUCT },
+		{ builtin_assign, Thunk::ASSIGN },
+		{ array_index, Thunk::INDEX_ARRAY },
+		{ dictionary_index, Thunk::INDEX_DICTIONARY },
+		{ packed_byte_index, Thunk::INDEX_PACKED_BYTE },
+		{ packed_int32_index, Thunk::INDEX_PACKED_INT32 },
+		{ packed_int64_index, Thunk::INDEX_PACKED_INT64 },
+		{ packed_float32_index, Thunk::INDEX_PACKED_FLOAT32 },
+		{ packed_float64_index, Thunk::INDEX_PACKED_FLOAT64 },
+		{ packed_string_index, Thunk::INDEX_PACKED_STRING },
+		{ packed_vector2_index, Thunk::INDEX_PACKED_VECTOR2 },
+		{ packed_vector3_index, Thunk::INDEX_PACKED_VECTOR3 },
+		{ packed_vector4_index, Thunk::INDEX_PACKED_VECTOR4 },
+		{ packed_color_index, Thunk::INDEX_PACKED_COLOR },
+		{ builtin_destruct, Thunk::DESTRUCT },
+		{ variant_destruct, Thunk::VARIANT_DESTRUCT },
+		{ variant_construct, Thunk::VARIANT_CONSTRUCT },
+		{ variant_copy, Thunk::VARIANT_COPY },
+		{ variant_assign, Thunk::VARIANT_ASSIGN },
+		{ variant_from_bool, Thunk::VARIANT_FROM_BOOL },
+		{ variant_from_int, Thunk::VARIANT_FROM_INT },
+		{ variant_from_double, Thunk::VARIANT_FROM_DOUBLE },
+		{ variant_to_bool, Thunk::VARIANT_TO_BOOL },
+		{ variant_to_int, Thunk::VARIANT_TO_INT },
+		{ variant_to_int64, Thunk::VARIANT_TO_INT64 },
+		{ variant_to_float, Thunk::VARIANT_TO_FLOAT },
+		{ variant_to_double, Thunk::VARIANT_TO_DOUBLE },
+		{ string_add_int, Thunk::STRING_ADD_INT },
+		{ string_add_int_r, Thunk::STRING_ADD_INT_R },
+		{ string_add_double, Thunk::STRING_ADD_DOUBLE },
+		{ string_add_double_r, Thunk::STRING_ADD_DOUBLE_R },
+		{ for_begin, Thunk::FOR_BEGIN },
+		{ for_next, Thunk::FOR_NEXT },
+	};
+	for (const Entry &e : entries) {
+		if ((void *)e.fn == p_function) {
+			return e.kind;
+		}
+	}
+	return typed_array_thunk_kind(p_function);
+}
+
+GDExtensionObjectPtr singleton_object(const Method *p_method) {
+	GDExtensionObjectPtr &self = singleton_objects[p_method->owner];
+	if (!self) {
+		StringName name(classes[p_method->owner].name);
+		self = gdextension_interface::global_get_singleton(name._native_ptr());
+	}
+	return self;
+}
 
 int register_api(asIScriptEngine *p_engine) {
 	engine = p_engine;

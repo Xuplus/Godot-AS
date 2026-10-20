@@ -146,7 +146,9 @@ func finish(load_ms: float) -> void:
 	for line in lines:
 		print(line)
 	print("load bench.as: %.2f ms; register the Godot API: %.2f ms (%d errors)" % [load_ms, stats.registration_ms, stats.registration_errors])
+	if stats.get("aot_functions", 0) > 0:
+		print("compiled ahead of time: %d of %d script functions" % [stats.aot_functions, stats.script_functions])
 	print("BENCH_JSON ", JSON.stringify({"platform": OS.get_name(), "arch": Engine.get_architecture_name(),
 			"build": build, "godot": Engine.get_version_info().string, "results": report,
-			"registration_ms": stats.registration_ms}, "", false))
+			"registration_ms": stats.registration_ms, "aot_functions": stats.get("aot_functions", 0)}, "", false))
 	get_tree().quit()

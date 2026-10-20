@@ -1,5 +1,6 @@
 #include "as_language.h"
 
+#include "aot/aot_runtime.h"
 #include "as_completion.h"
 #include "as_instance.h"
 #include "as_outline.h"
@@ -287,6 +288,7 @@ Dictionary template_dict(const BuiltInTemplate &p_template, int p_id) {
 
 void AngelScriptLanguage::_bind_methods() {
 	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("get_startup_stats"), &AngelScriptLanguage::get_startup_stats);
+	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("generate_aot", "path"), &AngelScriptLanguage::generate_aot);
 	// Editor services as plain calls, for tests and external tools (the editor itself goes through
 	// the ScriptLanguage virtuals).
 	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("complete_code", "code", "path"), &AngelScriptLanguage::complete_code);
@@ -541,8 +543,19 @@ Dictionary AngelScriptLanguage::get_startup_stats() {
 		singleton->ensure_engine();
 		d["registration_ms"] = singleton->registration_ms;
 		d["registration_errors"] = singleton->registration_errors;
+		d["aot_functions"] = asaot::stats().compiled;
+		d["script_functions"] = asaot::stats().total;
 	}
 	return d;
+}
+
+Dictionary AngelScriptLanguage::generate_aot(const String &p_path) {
+	Dictionary report;
+	String error;
+	if (!ASProject::get().generate_aot(p_path, report, error)) {
+		report["error"] = error;
+	}
+	return report;
 }
 
 void AngelScriptLanguage::script_created(AngelScript *p_script) {

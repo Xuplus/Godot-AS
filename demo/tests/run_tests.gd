@@ -90,6 +90,18 @@ func _ready() -> void:
 	check(typed_export, "exported TypedArray<Node2D> shows as a typed array")
 
 	check(dialect.process_priority == 7, "default statement sets an engine property")
+
+	var aot := Node.new()
+	aot.set_script(load("res://tests/aot_test.as"))
+	add_child(aot)
+	var aot_result = aot.call("run") if aot.has_method("run") else null
+	check(aot_result is String, "aot_test.as run() completed")
+	var aot_failures: String = aot_result if aot_result is String else ""
+	for line in aot_failures.split("
+", false):
+		check(false, "aot_test: " + line)
+	check(aot_failures.is_empty(), "aot_test.as: compiled-code edge cases (%d of %d functions compiled)" % [
+			AngelScriptLanguage.get_startup_stats().get("aot_functions", 0), AngelScriptLanguage.get_startup_stats().get("script_functions", 0)])
 	var ping_args := []
 	var moved_args := []
 	for sig in dialect.get_script().get_script_signal_list():

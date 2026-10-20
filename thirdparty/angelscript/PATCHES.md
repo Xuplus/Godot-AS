@@ -102,3 +102,32 @@ value types. Stock add-ons only iterate reference types (`array<T>`), which is w
 unnoticed; it's a candidate to send upstream.
 
 File: `source/as_compiler.cpp`.
+
+## AOT helpers
+
+Entry points for ahead-of-time compiled scripts (Godot-AS `src/aot/`, see `docs/aot.md`).
+Compiled code runs on the context's own registers. For a few instructions it calls the VM's
+implementation through these functions, each a copy of that instruction's case in
+`asCContext::ExecuteNext`:
+
+| Function | Does |
+|---|---|
+| `asJitCallSystem` | CALLSYS, including the suspend and exception checks after the call |
+| `asJitFree`, `asJitRefCpy`, `asJitRefCpyV` | FREE, REFCPY, RefCpyV |
+| `asJitCall` | CALL, CALLINTF and ALLOC of a script class: sets up the callee's frame and returns its compiled code, if any, to call directly |
+| `asJitReturn` | the callee's RET, for compiled code that called it directly |
+| `asJitGetModuleFunctions`, `asJitGetVariables`, `asJitGetCallInfo` | what the generator needs: every function of a module, each variable's stack extent, how the VM calls a generic system function |
+
+Files: `include/angelscript.h` (declarations after `asIJITCompilerV2`), `source/as_jit_helpers.cpp`
+(new). Nothing else changes; the stock JIT interface (`SetJITCompiler`, JitEntry) does the rest.
+
+## Exact float literals (bug fix)
+
+`asStringScanDouble` summed `digit * 0.1^n`, which rounds at every step: `0.75` became
+`0.7500000000000001`, so a literal didn't equal the same value computed exactly (`3 * 0.25`). It
+now builds an exact integer from the digits and scales it by an exact power of ten, which rounds
+correctly for any literal with up to 19 significant digits and a power of ten within ±22 (all
+ordinary literals). Others go through `strtod`, used only when it reads the same text, since it
+depends on the C locale. A candidate to send upstream.
+
+File: `source/as_string_util.cpp`.

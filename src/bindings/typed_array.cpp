@@ -232,4 +232,27 @@ int register_typed_array(asIScriptEngine *e) {
 	return errors;
 }
 
+Thunk typed_array_thunk_kind(void *p_function) {
+	struct Entry {
+		asGENFUNC_t fn;
+		Thunk kind;
+	};
+	static const Entry entries[] = {
+		{ get_at, Thunk::TYPED_ARRAY_GET },
+		{ set_at, Thunk::TYPED_ARRAY_SET },
+		{ append, Thunk::TYPED_ARRAY_APPEND },
+		{ size, Thunk::TYPED_ARRAY_SIZE },
+		{ for_end, Thunk::TYPED_ARRAY_FOR_END },
+		{ destroy, Thunk::TYPED_ARRAY_DESTROY },
+		{ for_begin, Thunk::FOR_BEGIN },
+		{ for_next, Thunk::FOR_NEXT },
+	};
+	for (const Entry &e : entries) {
+		if ((void *)e.fn == p_function) {
+			return e.kind;
+		}
+	}
+	return Thunk::OTHER;
+}
+
 } // namespace asrt

@@ -107,6 +107,7 @@ class ASProject {
 	// Exported games run from a package (see make_package) instead of compiling sources.
 	bool package_mode = false;
 	PackedByteArray package_bytecode;
+	bool package_jit_entries = false; // exported with angelscript/compiled_scripts
 	ASMetadata package_metadata;
 	bool load_package();
 	bool build_from_package();
@@ -142,7 +143,13 @@ public:
 
 	// Compiles every .as file and serializes the result for an exported game: bytecode, the metadata
 	// and declarations the class tables need, and export defaults. Empty (with r_error) on errors.
-	PackedByteArray make_package(String &r_error);
+	// p_jit_entries: for a build with the scripts' C++ (export option angelscript/compiled_scripts).
+	PackedByteArray make_package(String &r_error, bool p_jit_entries = false);
+	// Compiles the project like make_package (or, in an exported game, takes the bytecode it loaded)
+	// and writes its functions as C++ to p_path, for an extension build with compiled scripts
+	// (src/aot/aot_runtime.h). Only in builds with the generator (aot_generator.h).
+	bool generate_aot(const String &p_path, Dictionary &r_report, String &r_error);
+	void generate_aot_from_command_line();
 	bool is_package_mode() const { return package_mode; }
 
 	// Every .as file under the folder `p_root`, relative path -> file_stamp. Uses no Godot API, so

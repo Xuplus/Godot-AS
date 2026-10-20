@@ -52,7 +52,25 @@ def build_bindings(target, source, env):
 
 bindings = env.Command("src/gen/api_data.gen.cpp", [api_json, "tools/generate_bindings.py"], build_bindings)
 
-sources = Glob("src/*.cpp") + Glob("src/bindings/*.cpp") + Glob("src/editor/*.cpp") + bindings
+sources = Glob("src/*.cpp") + Glob("src/bindings/*.cpp") + Glob("src/editor/*.cpp") + Glob("src/aot/*.cpp") + bindings
+
+# Ahead-of-time compiled scripts: aot=<folder> adds the C++ that `AngelScriptLanguage.generate_aot`
+# (tools/aot.py) wrote there. Exported games of that project then run those functions natively.
+opts = Variables([], ARGUMENTS)
+opts.Add(PathVariable("aot", "Folder of generated script C++ to compile in", "", PathVariable.PathAccept))
+# A game build that can generate that C++ itself (-- --angelscript-aot=<file>), for platforms whose
+# bytecode layout differs from the editor's (32-bit: the web). Editor builds always can.
+opts.Add(BoolVariable("aot_generator", "Include the script C++ generator in game builds", False))
+opts.Update(env)
+if env["aot_generator"]:
+    env.Append(CPPDEFINES=["GODOT_AS_AOT_GENERATOR"])
+if env["aot"]:
+    aot_dir = Dir(env["aot"]).abspath
+    aot_sources = Glob(os.path.join(aot_dir, "*.cpp"))
+    if not aot_sources:
+        print("aot={}: no generated .cpp files there".format(env["aot"]))
+        Exit(1)
+    sources += aot_sources
 
 if env["platform"] == "macos":
     library = env.SharedLibrary(

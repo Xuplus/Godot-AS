@@ -122,14 +122,41 @@ The runner measures this row separately, so the other rows don't depend on the o
     types are 32-bit and `double` elsewhere.
   - GDScript's `BenchTree` is a RefCounted inner class; AngelScript's is a plain script class.
 
-## What AOT should change
+## After compiling to C++
 
-Compiling to C++ removes the VM's dispatch, and lets generated code call Godot's operator evaluators
-and MethodBinds directly instead of through generic thunks.
-- The **script-only rows** (math_loop, vector_loop_floats, fib) should approach native C++.
-- The **rows that lose today** (vector_loop, nbody, sieve, the containers, utility calls, engine
-  calls) depend on how AOT calls Godot. That's where the language's speed in real game code is
-  decided. Inlining Vector2/Vector3 math into C++ instead of calling Godot's evaluators should win
-  the most.
-- **Calls from Godot** (`1M calls`, `_process`) go through the same instance and context code with
-  or without AOT, unless AOT also generates direct entry points.
+Compiled scripts ([aot.md](aot.md)), Windows x86_64, exported release, best of 3
+(`docs/bench/windows-release-aot.json`). Measure them again with:
+
+```bash
+python tools/export_demo.py --aot --scene res://bench/run_bench.tscn "Windows Desktop"
+```
+
+```bash
+python tools/bench.py --exe build/windows/godot_as_demo.exe --compare docs/bench/windows-release.json
+```
+
+| Benchmark | GD/AS before | GD/AS compiled |
+|---|---:|---:|
+| math_loop(10M) | 3.18x | 9.10x |
+| vector_loop_floats(5M) | 3.66x | 10.41x |
+| fib(27) | 3.31x | 2.64x |
+| binary_trees(15) | 2.08x | 1.92x |
+| sieve(2M) | 0.43x | 1.52x |
+| vector_loop(5M) | 0.27x | 2.40x |
+| nbody(25) | 0.18x | 1.19x |
+| string_ops(500k) | 0.45x | 1.03x |
+| array_ops(1M) | 0.25x | 0.95x |
+| dictionary_ops(1M) | 0.23x | 1.19x |
+| utility_calls(1M) | 0.54x | 1.52x |
+| engine_get_only(1M) | 0.63x | 2.45x |
+| engine_calls(1M) | 0.54x | 1.19x |
+| 1M calls Godot → script | 0.48x | 0.47x |
+| 5000 nodes with `_process` | 0.68x | 0.95x |
+| 1M calls, GC objects pending | 0.14x | 0.14x |
+
+The gains on Godot types come from direct calls into Godot, which the VM can't make. Calls from Godot
+into script and the garbage collector don't involve compiled code and didn't change.
+
+**VM timings move between builds.** Rebuilding with unrelated source changes moved the VM's
+`vector_loop_floats` from 88 to 137–157 ms, and `math_loop` from 205 to 181 ms, with the same
+bytecode and the same VM source (details in [aot.md](aot.md)). Treat a single VM number as ±30%.

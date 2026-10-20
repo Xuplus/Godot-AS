@@ -63,6 +63,73 @@ void set_pending_owner(GDExtensionObjectPtr p_owner);
 // Sets a `Signal` field of a script object to `p_owner`'s signal `p_name`.
 void init_signal(void *p_field, GDExtensionObjectPtr p_owner, const godot::StringName &p_name);
 
+// Registered generic functions that ahead-of-time compiled code calls directly (src/aot/). The
+// auxiliary pointer of each tells it what to call.
+enum class Thunk : uint8_t {
+	OTHER,
+	OPERATOR, // aux: OpContext
+	OBJECT_METHOD, // aux: asapi::Method (engine method; the object is a proxy)
+	STATIC_METHOD, // aux: asapi::Method (static or utility function)
+	SINGLETON_METHOD, // aux: asapi::Method
+	BUILTIN_METHOD, // aux: asapi::Method (method of a builtin value type)
+	CONSTRUCT, // aux: CtorContext
+	ASSIGN, // aux: GDExtensionVariantType
+	INDEX_ARRAY,
+	INDEX_DICTIONARY,
+	INDEX_PACKED_BYTE,
+	INDEX_PACKED_INT32,
+	INDEX_PACKED_INT64,
+	INDEX_PACKED_FLOAT32,
+	INDEX_PACKED_FLOAT64,
+	INDEX_PACKED_STRING,
+	INDEX_PACKED_VECTOR2,
+	INDEX_PACKED_VECTOR3,
+	INDEX_PACKED_VECTOR4,
+	INDEX_PACKED_COLOR,
+	DESTRUCT, // aux: GDExtensionPtrDestructor
+	VARIANT_DESTRUCT,
+	VARIANT_CONSTRUCT,
+	VARIANT_COPY,
+	VARIANT_ASSIGN,
+	VARIANT_FROM_BOOL,
+	VARIANT_FROM_INT,
+	VARIANT_FROM_DOUBLE,
+	VARIANT_TO_BOOL,
+	VARIANT_TO_INT,
+	VARIANT_TO_INT64,
+	VARIANT_TO_FLOAT,
+	VARIANT_TO_DOUBLE,
+	STRING_ADD_INT,
+	STRING_ADD_INT_R,
+	STRING_ADD_DOUBLE,
+	STRING_ADD_DOUBLE_R,
+	FOR_BEGIN, // opForBegin: 0
+	FOR_NEXT, // opForNext: index + 1
+	TYPED_ARRAY_GET, // TypedArray<T> (typed_array.cpp)
+	TYPED_ARRAY_SET,
+	TYPED_ARRAY_APPEND,
+	TYPED_ARRAY_SIZE,
+	TYPED_ARRAY_FOR_END,
+	TYPED_ARRAY_DESTROY,
+};
+Thunk thunk_kind(void *p_generic_function);
+Thunk typed_array_thunk_kind(void *p_generic_function);
+
+struct OpContext {
+	const asapi::Operator *op;
+	GDExtensionPtrOperatorEvaluator eval;
+	GDExtensionPtrOperatorEvaluator eval_eq; // for opCmp
+};
+
+struct CtorContext {
+	const asapi::Ctor *ctor;
+	GDExtensionPtrConstructor fn;
+	uint32_t vtype;
+};
+
+// The engine singleton a SINGLETON_METHOD calls, or null when it isn't available.
+GDExtensionObjectPtr singleton_object(const asapi::Method *p_method);
+
 // Sets a script object's hidden `__self` property to `p_owner` (a reference that doesn't keep it alive).
 void bind_script_owner(asIScriptObject *p_object, GDExtensionObjectPtr p_owner);
 

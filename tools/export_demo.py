@@ -39,7 +39,7 @@ def preset_paths():
     return presets
 
 
-def stage(scene, compatibility):
+def stage(scene, compatibility, arch=None, aot=False):
     os.makedirs(STAGE, exist_ok=True)
     for entry in os.listdir(DEMO):
         src = os.path.join(DEMO, entry)
@@ -60,6 +60,14 @@ def stage(scene, compatibility):
     if compatibility and "rendering_method.mobile" not in text:
         text = text.replace("[rendering]\n", '[rendering]\n\nrenderer/rendering_method.mobile="gl_compatibility"\n', 1)
     open(project, "w", encoding="utf-8", newline="\n").write(text)
+    presets = os.path.join(STAGE, "export_presets.cfg")
+    text = open(presets, encoding="utf-8").read()
+    if arch:
+        text = re.sub(r'^binary_format/architecture="x86_64"$', 'binary_format/architecture="%s"' % arch, text, flags=re.M)
+    if aot:
+        # Bytecode for an extension built with the scripts' C++ (tools/aot.py).
+        text = re.sub(r"^angelscript/precompile=true$", "angelscript/precompile=true\nangelscript/compiled_scripts=true", text, flags=re.M)
+    open(presets, "w", encoding="utf-8", newline="\n").write(text)
 
 
 def main():
@@ -69,11 +77,13 @@ def main():
     parser.add_argument("--debug", action="store_true", help="export with the debug templates")
     parser.add_argument("--compatibility", action="store_true", help="use the OpenGL renderer on mobile (for emulators)")
     parser.add_argument("--run", action="store_true", help="run exported desktop games headless; the exit code is the game's")
+    parser.add_argument("--arch", help="Windows architecture (default x86_64); others export to build/windows-<arch>/")
+    parser.add_argument("--aot", action="store_true", help="export for an extension built with the scripts' C++ (see tools/aot.py)")
     args = parser.parse_args()
 
     godot = os.environ.get("GODOT", "godot")
     paths = preset_paths()
-    stage(args.scene, args.compatibility)
+    stage(args.scene, args.compatibility, args.arch, args.aot)
     # Imports what changed (new files, or the texture formats above).
     subprocess.run([godot, "--headless", "--path", STAGE, "--import"], check=False)
 
@@ -85,6 +95,8 @@ def main():
             continue
         # Preset paths are relative to the project; the stage sits one level deeper than demo/.
         out = os.path.normpath(os.path.join(DEMO, paths[preset]))
+        if args.arch and preset == "Windows Desktop":
+            out = out.replace(os.sep + "windows" + os.sep, os.sep + "windows-" + args.arch + os.sep)
         os.makedirs(os.path.dirname(out), exist_ok=True)
         mode = "--export-debug" if args.debug else "--export-release"
         print("Exporting %s -> %s" % (preset, out))

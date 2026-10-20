@@ -13,6 +13,11 @@ possible:
 The scripts ship precompiled, without their sources. macOS and iOS need a Mac to build and weren't
 attempted. Linux was left out of this round.
 
+**Compiled scripts (the last step):** exported games can also run their scripts as C++ compiled into
+the extension, on Windows, Android and the web. Code that works on Godot's types goes from 2–5x
+slower than GDScript to faster; code that stays in script runs 9–10x GDScript. See
+[aot.md](aot.md).
+
 ## Exporting a project
 
 1. Build the extension for each target (see Building below). The libraries land in `demo/bin/`, and
@@ -110,8 +115,6 @@ python tools/export_demo.py --scene res://tests/dodge_test.tscn --debug --compat
 
 - **macOS and iOS** need a Mac. **Linux** wasn't built: it needs a Linux toolchain, and this
   machine's WSL has no compiler or passwordless sudo. Docker could build it.
-- **Compiling scripts to C++ ahead of time** for release builds is deferred. The VM with
-  precompiled bytecode is what ships.
 - **Web exports with thread support** need a `threads=yes` build of the extension, which wasn't made.
 - **On the web, quitting** sometimes logs "external reference to an object in module" warnings
   from AngelScript, after the tests finish. They showed in runs where the page was throttled.

@@ -33,6 +33,7 @@
 
 #include <string.h>     // some compilers declare memcpy() here
 #include <math.h>       // pow()
+#include <stdlib.h>     // strtod() -- GODOT-AS PATCH (exact float literals)
 
 #if !defined(AS_NO_MEMORY_H)
 #include <memory.h>
@@ -76,88 +77,102 @@ int asCompareStrings(const char *str1, size_t len1, const char *str2, size_t len
 
 double asStringScanDouble(const char *string, size_t *numScanned)
 {
-	// I decided to do my own implementation of strtod() because this function
-	// doesn't seem to be present on all systems. iOS 5 for example doesn't appear 
-	// to include the function in the standard lib.
-	
-	// Another reason is that the standard implementation of strtod() is dependent
-	// on the locale on some systems, i.e. it may use comma instead of dot for 
-	// the decimal indicator. This can be avoided by forcing the locale to "C" with
-	// setlocale(), but this is another thing that is highly platform dependent.
+	// GODOT-AS PATCH (exact float literals): the original summed digit * 0.1^n, which is off by an
+	// ulp or more for most literals (0.75 became 0.7500000000000001), so a literal never equalled the
+	// same value computed exactly. Literals are now correctly rounded: the digits form an exact
+	// integer, scaled by an exact power of ten (both fit a double for any ordinary literal);
+	// otherwise strtod does it, when it reads the same text (it depends on the C locale).
 
-	double value = 0;
-	double fraction = 0.1;
-	int exponent = 0;
-	bool negativeExponent = false;
-	int c = 0;
-
-	// The tokenizer separates the sign from the number in   
+	// The tokenizer separates the sign from the number in
 	// two tokens so we'll never have a sign to parse here
 
-	// Parse the integer value
+	asQWORD mantissa = 0;
+	int digits = 0;       // significant digits kept in the mantissa
+	int scale = 0;        // power of ten to apply to the mantissa
+	bool exact = true;
+	int c = 0;
+
 	for( ;; )
 	{
 		if( string[c] >= '0' && string[c] <= '9' )
-			value = value*10 + double(string[c] - '0');
-		else 
+		{
+			if( digits < 19 )
+			{
+				mantissa = mantissa*10 + asQWORD(string[c] - '0');
+				if( mantissa ) digits++;
+			}
+			else
+			{
+				scale++;
+				exact = false;
+			}
+		}
+		else
 			break;
-
 		c++;
 	}
 
 	if( string[c] == '.' )
 	{
 		c++;
-
-		// Parse the fraction
 		for( ;; )
 		{
 			if( string[c] >= '0' && string[c] <= '9' )
-				value += fraction * double(string[c] - '0');
+			{
+				if( digits < 19 )
+				{
+					mantissa = mantissa*10 + asQWORD(string[c] - '0');
+					if( mantissa ) digits++;
+					scale--;
+				}
+				else if( string[c] != '0' )
+					exact = false;
+			}
 			else
 				break;
-
 			c++;
-			fraction *= 0.1;
 		}
 	}
 
 	if( string[c] == 'e' || string[c] == 'E' )
 	{
-		c++;
-
-		// Parse the sign of the exponent
-		if( string[c] == '-' )
+		int e = c + 1;
+		bool negativeExponent = false;
+		if( string[e] == '-' )
 		{
 			negativeExponent = true;
-			c++;
+			e++;
 		}
-		else if( string[c] == '+' )
-			c++;
+		else if( string[e] == '+' )
+			e++;
 
-		// Parse the exponent value
-		for( ;; )
+		int exponent = 0;
+		while( string[e] >= '0' && string[e] <= '9' )
 		{
-			if( string[c] >= '0' && string[c] <= '9' )
-				exponent = exponent*10 + int(string[c] - '0');
-			else
-				break;
-
-			c++;
+			if( exponent < 100000 )
+				exponent = exponent*10 + int(string[e] - '0');
+			e++;
 		}
-	}
-
-	if( exponent )
-	{
-		if( negativeExponent )
-			exponent = -exponent;
-		value *= pow(10.0, exponent);
+		c = e;
+		scale += negativeExponent ? -exponent : exponent;
 	}
 
 	if( numScanned )
 		*numScanned = c;
 
-	return value;
+	// 10^0 .. 10^22 are exact doubles.
+	static const double powers[] = { 1e0, 1e1, 1e2, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9, 1e10, 1e11,
+		1e12, 1e13, 1e14, 1e15, 1e16, 1e17, 1e18, 1e19, 1e20, 1e21, 1e22 };
+	if( mantissa == 0 )
+		return 0;
+	if( exact && mantissa <= (asQWORD(1) << 53) && scale >= -22 && scale <= 22 )
+		return scale < 0 ? double(mantissa) / powers[-scale] : double(mantissa) * powers[scale];
+
+	char *end = 0;
+	double value = strtod(string, &end);
+	if( end == string + c )
+		return value;
+	return double(mantissa) * pow(10.0, scale);
 }
 
 // Converts a character to the decimal number based on the radix

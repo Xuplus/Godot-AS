@@ -1,5 +1,7 @@
 #include "as_project.h"
 
+#include "aot/aot_generator.h"
+#include "aot/aot_runtime.h"
 #include "as_language.h"
 #include "as_outline.h"
 #include "bindings/api_data.h"
@@ -7,9 +9,12 @@
 
 #include <godot_cpp/classes/class_db_singleton.hpp>
 #include <godot_cpp/classes/dir_access.hpp>
+#include <godot_cpp/classes/engine.hpp>
 #include <godot_cpp/classes/file_access.hpp>
+#include <godot_cpp/classes/json.hpp>
 #include <godot_cpp/classes/os.hpp>
 #include <godot_cpp/classes/project_settings.hpp>
+#include <godot_cpp/classes/scene_tree.hpp>
 #include <godot_cpp/classes/time.hpp>
 #include <godot_cpp/core/error_macros.hpp>
 #include <godot_cpp/core/property_info.hpp>
@@ -679,7 +684,7 @@ bool ASProject::validate(const String &p_path, const String &p_source) const {
 	return ok;
 }
 
-PackedByteArray ASProject::make_package(String &r_error) {
+PackedByteArray ASProject::make_package(String &r_error, bool p_jit_entries) {
 	std::lock_guard<std::recursive_mutex> lock(mutex);
 	ensure_scanned();
 	AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
@@ -687,7 +692,11 @@ PackedByteArray ASProject::make_package(String &r_error) {
 	lang->set_diagnostic_sink(&diagnostics);
 	CScriptBuilder builder;
 	asIScriptModule *module = nullptr;
+	// JitEntry instructions let exports run ahead-of-time compiled code (src/aot/).
+	asIScriptEngine *engine = lang->get_engine();
+	engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, p_jit_entries);
 	bool ok = build_module(files, "__package__", &module, builder);
+	engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, false);
 	lang->set_diagnostic_sink(nullptr);
 	if (!ok) {
 		for (const ASDiagnostic &d : diagnostics) {
@@ -755,6 +764,7 @@ PackedByteArray ASProject::make_package(String &r_error) {
 	Dictionary package;
 	package["format"] = 1;
 	package["bytecode"] = bytecode;
+	package["jit_entries"] = p_jit_entries;
 	package["files"] = file_table;
 	package["type_meta"] = type_meta;
 	package["prop_meta"] = prop_meta;
@@ -765,6 +775,7 @@ bool ASProject::load_package() {
 	Dictionary package = UtilityFunctions::bytes_to_var(FileAccess::get_file_as_bytes(PACKAGE_PATH));
 	ERR_FAIL_COND_V_MSG((int)package.get("format", 0) != 1, false, "AngelScript: the compiled scripts in the export have an unknown format.");
 	package_bytecode = package["bytecode"];
+	package_jit_entries = package.get("jit_entries", false);
 	Dictionary file_table = package["files"];
 	Array paths = file_table.keys();
 	for (int i = 0; i < paths.size(); i++) {
@@ -812,6 +823,11 @@ bool ASProject::load_package() {
 
 bool ASProject::build_from_package() {
 	asIScriptEngine *engine = AngelScriptLanguage::get_singleton()->get_engine();
+	if (package_jit_entries && asaot::install(engine)) {
+		// Functions AngelScript generates while loading (template instance constructors) get JitEntry
+		// instructions too; it warns about functions without any.
+		engine->SetEngineProperty(asEP_INCLUDE_JIT_INSTRUCTIONS, true);
+	}
 	uint64_t start = Time::get_singleton()->get_ticks_usec();
 	asIScriptModule *module = engine->GetModule(vformat("project#%d", (int64_t)++module_counter).utf8().get_data(), asGM_ALWAYS_CREATE);
 	ByteStream stream;
@@ -821,10 +837,73 @@ bool ASProject::build_from_package() {
 		ERR_FAIL_V_MSG(false, "AngelScript: the compiled scripts don't match this build of the extension. Export the project again.");
 	}
 	uint64_t loaded = Time::get_singleton()->get_ticks_usec();
+	if (asaot::stats().compiled > 0) {
+		UtilityFunctions::print_verbose(vformat("AngelScript: %d of %d script functions run compiled code.", (int64_t)asaot::stats().compiled, (int64_t)asaot::stats().total));
+	}
 	bool ok = publish(module, package_metadata, files);
+	generate_aot_from_command_line();
 	UtilityFunctions::print_verbose(vformat("AngelScript: loaded %d compiled files in %.1f ms (+%.1f ms for class info).", (int64_t)files.size(),
 			(loaded - start) / 1000.0, (Time::get_singleton()->get_ticks_usec() - loaded) / 1000.0));
 	return ok;
+}
+
+// An exported game started with `-- --angelscript-aot=<file.cpp>` writes the C++ for its scripts
+// (see tools/aot.py) and quits. This is how 32-bit platforms get code for their bytecode layout.
+void ASProject::generate_aot_from_command_line() {
+	PackedStringArray args = OS::get_singleton()->get_cmdline_user_args();
+	for (int64_t i = 0; i < args.size(); i++) {
+		if (!args[i].begins_with("--angelscript-aot=")) {
+			continue;
+		}
+		Dictionary report;
+		String error;
+		bool ok = generate_aot(args[i].substr(18), report, error);
+		if (!ok) {
+			report["error"] = error;
+		}
+		UtilityFunctions::print("AOT_REPORT ", JSON::stringify(report));
+		if (SceneTree *tree = Object::cast_to<SceneTree>(Engine::get_singleton()->get_main_loop())) {
+			tree->quit(ok ? 0 : 1);
+		}
+		return;
+	}
+}
+
+bool ASProject::generate_aot(const String &p_path, Dictionary &r_report, String &r_error) {
+#ifdef ASAOT_GENERATOR
+	std::lock_guard<std::recursive_mutex> lock(mutex);
+	PackedByteArray bytecode;
+	if (package_mode) {
+		if (!package_jit_entries) {
+			r_error = "This game was exported without the angelscript/compiled_scripts option; export it again with the option on.";
+			return false;
+		}
+		bytecode = package_bytecode;
+	} else {
+		PackedByteArray package = make_package(r_error, true);
+		if (package.is_empty()) {
+			return false;
+		}
+		Dictionary contents = UtilityFunctions::bytes_to_var(package);
+		bytecode = contents["bytecode"];
+	}
+	// Generate from the bytecode as an exported game loads it, not as the compiler left it.
+	asIScriptEngine *engine = AngelScriptLanguage::get_singleton()->get_engine();
+	asIScriptModule *module = engine->GetModule("__aot__", asGM_ALWAYS_CREATE);
+	ByteStream stream;
+	stream.data.assign(bytecode.ptr(), bytecode.ptr() + bytecode.size());
+	if (module->LoadByteCode(&stream) < 0) {
+		module->Discard();
+		r_error = "AngelScript couldn't load the compiled bytecode.";
+		return false;
+	}
+	bool ok = asaot::generate(module, p_path, r_report, r_error);
+	module->Discard();
+	return ok;
+#else
+	r_error = "This build can't generate compiled scripts: use the editor, or a build made with aot_generator=yes.";
+	return false;
+#endif
 }
 
 std::shared_ptr<ASModuleHandle> ASProject::get_latest_module() const {

@@ -1479,6 +1479,45 @@ public:
 	virtual ~asIJITCompilerV2() {}
 };
 
+// GODOT-AS PATCH (aot helpers): instructions that ahead-of-time compiled code runs through the VM's
+// own implementation. `bc` points at the instruction; `regs` is the context's register set, with
+// stackFramePointer current. Each helper behaves exactly like the VM's case for that instruction.
+// asJitCallSystem returns false when the native code must return to the VM (the context was
+// suspended or raised an exception); the registers are then up to date, programPointer included.
+bool   asJitCallSystem(asSVMRegisters *regs, asDWORD *bc, asDWORD **sp);
+void   asJitFree(asSVMRegisters *regs, asDWORD *bc, asDWORD *sp);
+void   asJitRefCpy(asSVMRegisters *regs, asDWORD *bc, asDWORD **sp);
+void   asJitRefCpyV(asSVMRegisters *regs, asDWORD *bc, asDWORD *sp);
+// Calls into script from compiled code. asJitCall runs the CALL, CALLINTF or ALLOC (of a script
+// class) at bc the way the VM does, which leaves the registers in the callee with the caller's
+// return address on the call stack. Returns 0 when it did nothing (ALLOC of another type: the VM
+// must run the instruction), 1 when the VM must run the callee (it isn't compiled, the context
+// was suspended, or an error was raised), and 2 when *r_fn is the callee's compiled code, to be
+// called with *r_arg. After that call, asJitReturn runs the callee's RET if the callee stopped
+// there, and returns false when the VM must carry on instead.
+int    asJitCall(asSVMRegisters *regs, asDWORD *bc, asDWORD *sp, asJITFunction *r_fn, asPWORD *r_arg);
+bool   asJitReturn(asSVMRegisters *regs);
+// Every script function compiled in the module (methods, constructors, lambdas included). Returns
+// the count; fills at most p_max entries of r_funcs.
+asUINT asJitGetModuleFunctions(asIScriptModule *module, asIScriptFunction **r_funcs, asUINT max);
+// The variables of a script function (parameters and temporaries included): each one's stack offset
+// and the dwords it occupies from there (offset, offset - 1, ...). Returns the count; fills at most
+// max entries.
+asUINT asJitGetVariables(asIScriptFunction *func, int *r_offsets, int *r_dwords, asUINT max);
+// How the VM calls a registered generic-convention function, for compiled code that calls it
+// directly. Returns false for script functions and other calling conventions.
+struct asSJitCallInfo
+{
+	void *func;          // the asGENFUNC_t
+	bool  isMethod;      // the object pointer is the first thing on the stack
+	bool  returnOnStack; // then the address the return value is constructed at
+	bool  variadic;
+	bool  autoHandle;    // the returned handle gets an extra reference
+	int   paramSize;     // dwords of arguments after those
+	int   cleanArgs;     // arguments the VM releases or frees after the call
+};
+bool asJitGetCallInfo(asIScriptFunction *func, asSJitCallInfo *info);
+
 // Byte code instructions
 enum asEBCInstr
 {
