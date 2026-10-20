@@ -99,6 +99,7 @@ All `.as` files under `res://` compile into one module, like UE-AS. Classes see 
   - Methods are found with `ASCompiledClass::find_method`, keyed on the StringName's data pointer: godot-cpp's own StringName hash and `==` are calls into the engine. Parameter and return handling is worked out per method at build time (`ASCompiledClass::Method`).
   - The context borrows the script object (`SetObjectBorrowed`, an AngelScript patch). An instance freed during a call leaves its reference to the outermost call running that object (`release_instance_object`); nothing in `call` may read the instance after `run_context`.
   - Per-thread state on this path (context pool, active calls) is plain arrays, not `std::vector`: see the thread_local note under Debugger.
+- **Garbage collector:** AngelScript's automatic collection is off (it ran a step after every call into script). `_frame()` runs incremental steps (`collect_garbage`), and discarding a module goes through `discard_module`, which runs a full collection. See `docs/benchmarks.md`.
 - **Variant conversion** is centralized in `asrt::to_variant` / `from_variant`, keyed on AngelScript type ids via a type registry.
 
 ### Hot reload (`as_language.cpp`, `as_project.cpp`, `as_instance.cpp`)

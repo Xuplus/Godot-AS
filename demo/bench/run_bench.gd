@@ -99,8 +99,8 @@ func _ready() -> void:
 		per_frame.append(await run_movers(path))
 	record("%d nodes with _process" % MOVERS, per_frame[0], per_frame[1], "ms/frame")
 
-	# AngelScript runs a garbage collector step at the end of every call into script while any
-	# garbage-collected script object exists. binary_trees leaves 262k of them to collect.
+	# binary_trees leaves 262k garbage-collected objects to collect. AngelScript's automatic
+	# collection made every call into script pay for them; now the collector runs once per frame.
 	run_bench(["binary_trees(15)", &"binary_trees", 15], as_node, gd_node)
 	record("1M calls, GC objects pending", time_calls(as_node), time_calls(gd_node))
 
