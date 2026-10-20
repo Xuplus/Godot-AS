@@ -34,53 +34,58 @@ thread_local asIScriptObject *adopting = nullptr;
 // Converted call arguments that must stay alive until Execute() returns.
 struct ArgTemps {
 	static constexpr int MAX = 16;
+	struct Kind {
+		bool variant;
+		uint32_t vtype;
+	};
 	alignas(16) uint8_t data[MAX][128];
-	int type_ids[MAX] = {};
+	Kind kinds[MAX];
 	int count = 0;
 
-	void *alloc(int p_type_id) {
+	void *alloc(const ASCompiledClass::Method::Param &p_param) {
 		if (count >= MAX) {
 			return nullptr;
 		}
 		void *mem = data[count];
-		type_ids[count++] = p_type_id;
-		asrt::TypeInfo info = asrt::type_info(p_type_id);
-		if (info.kind == asrt::TypeKind::Variant) {
+		kinds[count++] = { p_param.variant, p_param.vtype };
+		if (p_param.variant) {
 			memnew_placement(mem, Variant);
 		} else {
-			asrt::construct_default(info.vtype, mem);
+			asrt::construct_default(p_param.vtype, mem);
 		}
 		return mem;
 	}
 
 	~ArgTemps() {
 		for (int i = 0; i < count; i++) {
-			asrt::TypeInfo info = asrt::type_info(type_ids[i]);
-			if (info.kind == asrt::TypeKind::Variant) {
+			if (kinds[i].variant) {
 				((Variant *)data[i])->~Variant();
 			} else {
-				asrt::destruct(info.vtype, data[i]);
+				asrt::destruct(kinds[i].vtype, data[i]);
 			}
 		}
 	}
 };
 
-bool set_arg(asIScriptContext *p_ctx, asUINT p_index, int p_type_id, asDWORD p_flags, const Variant &p_value, ArgTemps &p_temps) {
-	asrt::TypeInfo info = asrt::type_info(p_type_id);
-	if (info.kind == asrt::TypeKind::Builtin || info.kind == asrt::TypeKind::Variant) {
-		void *mem = p_temps.alloc(p_type_id);
-		if (!mem || !asrt::from_variant(p_value, mem, p_type_id)) {
-			return false;
+bool set_arg(asIScriptContext *p_ctx, asUINT p_index, const ASCompiledClass::Method::Param &p_param, const Variant &p_value, ArgTemps &p_temps) {
+	switch (p_param.pass) {
+		case ASCompiledClass::Method::PASS_SLOT: {
+			// Primitives, enums and handles are written straight into the argument slot (handles with
+			// one reference, which the callee releases).
+			void *slot = p_ctx->GetAddressOfArg(p_index);
+			return slot && asrt::from_variant(p_value, slot, p_param.type_id);
 		}
-		return ((p_flags & asTM_INOUTREF) ? p_ctx->SetArgAddress(p_index, mem) : p_ctx->SetArgObject(p_index, mem)) >= 0;
+		case ASCompiledClass::Method::PASS_VALUE:
+		case ASCompiledClass::Method::PASS_REF: {
+			void *mem = p_temps.alloc(p_param);
+			if (!mem || !asrt::from_variant(p_value, mem, p_param.type_id)) {
+				return false;
+			}
+			return (p_param.pass == ASCompiledClass::Method::PASS_REF ? p_ctx->SetArgAddress(p_index, mem) : p_ctx->SetArgObject(p_index, mem)) >= 0;
+		}
+		default:
+			return false; // references to primitives and handles aren't supported from Variant calls
 	}
-	if (p_flags & asTM_INOUTREF) {
-		return false; // references to primitives and handles aren't supported from Variant calls
-	}
-	// Primitives, enums and handles are written straight into the argument slot (handles with one
-	// reference, which the callee releases).
-	void *slot = p_ctx->GetAddressOfArg(p_index);
-	return slot && asrt::from_variant(p_value, slot, p_type_id);
 }
 
 // --- coroutines ----------------------------------------------------------------------------------------
@@ -90,13 +95,31 @@ bool set_arg(asIScriptContext *p_ctx, asUINT p_index, int p_type_id, asDWORD p_f
 // suspended context suspends the whole script call stack: a script function that calls one that
 // awaits waits too.
 
-// A context running on behalf of a script instance on this thread, innermost last.
+// Contexts running on behalf of a script instance on this thread, innermost last. Plain data, like
+// `running` in as_language.cpp: one is pushed on every call from Godot. The context only borrows
+// `object` (see call()), so an instance freed while its object runs leaves its reference to the
+// outermost call running that object (`release_object`), which drops it when it returns.
 struct ActiveCall {
 	asIScriptContext *ctx;
 	GDExtensionObjectPtr owner;
 	asIScriptObject *object;
+	bool release_object;
 };
-thread_local std::vector<ActiveCall> active_calls;
+// AngelScript stops nesting contexts well before this (asEP_MAX_NESTED_CALLS, 100).
+constexpr int MAX_ACTIVE_CALLS = 256;
+thread_local ActiveCall active_calls[MAX_ACTIVE_CALLS];
+thread_local int active_count = 0;
+
+// Drops an instance's reference to its script object, or hands it to a call still running it.
+void release_instance_object(asIScriptObject *p_object) {
+	for (int i = 0; i < active_count; i++) {
+		if (active_calls[i].object == p_object && !active_calls[i].release_object) {
+			active_calls[i].release_object = true;
+			return;
+		}
+	}
+	p_object->Release();
+}
 
 class ASAwait;
 // Set by await() for the context that is about to suspend.
@@ -189,9 +212,21 @@ public:
 int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScriptObject *p_object, std::unique_ptr<ArgTemps> &p_temps) {
 	ASAwait *outer = suspending;
 	suspending = nullptr;
-	active_calls.push_back({ p_ctx, p_owner, p_object });
+	bool tracked = active_count < MAX_ACTIVE_CALLS;
+	if (tracked) {
+		ActiveCall &call = active_calls[active_count++];
+		call.ctx = p_ctx;
+		call.owner = p_owner;
+		call.object = p_object;
+		call.release_object = false;
+	}
 	int r = AngelScriptLanguage::get_singleton()->run(p_ctx);
-	active_calls.pop_back();
+	if (tracked) {
+		const ActiveCall &done = active_calls[--active_count];
+		if (done.release_object) {
+			done.object->Release(); // a suspended context's object is kept by its ASAwait
+		}
+	}
 	ASAwait *awaiting = suspending;
 	suspending = outer;
 	if (r == asEXECUTION_SUSPENDED) {
@@ -205,21 +240,6 @@ int run_context(asIScriptContext *p_ctx, GDExtensionObjectPtr p_owner, asIScript
 		}
 	}
 	return r;
-}
-
-Variant get_return(asIScriptContext *p_ctx, const asIScriptFunction *p_func) {
-	int type_id = p_func->GetReturnTypeId();
-	if (type_id == asTYPEID_VOID) {
-		return Variant();
-	}
-	bool value_type = (type_id & asTYPEID_MASK_OBJECT) && !(type_id & asTYPEID_OBJHANDLE);
-	asITypeInfo *ti = p_ctx->GetEngine()->GetTypeInfoById(type_id);
-	if (ti && (ti->GetFlags() & asOBJ_REF) && !(type_id & asTYPEID_OBJHANDLE)) {
-		value_type = true; // a reference type returned by reference: GetReturnObject is the object
-	}
-	Variant out;
-	asrt::to_variant(value_type ? p_ctx->GetReturnObject() : p_ctx->GetAddressOfReturnValue(), type_id, out);
-	return out;
 }
 
 // --- GDExtensionScriptInstanceInfo3 callbacks -------------------------------------------------------
@@ -317,19 +337,19 @@ GDExtensionVariantType get_property_type_func(GDExtensionScriptInstanceDataPtr p
 GDExtensionBool validate_property_func(GDExtensionScriptInstanceDataPtr, GDExtensionPropertyInfo *) { return false; }
 
 GDExtensionBool has_method_func(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionConstStringNamePtr p_name) {
-	return self(p_instance)->compiled->methods.has(*(const StringName *)p_name);
+	return self(p_instance)->compiled->find_method(*(const StringName *)p_name) != nullptr;
 }
 
 GDExtensionInt get_method_argument_count_func(GDExtensionScriptInstanceDataPtr p_instance, GDExtensionConstStringNamePtr p_name, GDExtensionBool *r_is_valid) {
-	asIScriptFunction *const *fn = self(p_instance)->compiled->methods.getptr(*(const StringName *)p_name);
-	*r_is_valid = fn != nullptr;
-	return fn ? (*fn)->GetParamCount() : 0;
+	const ASCompiledClass::Method *m = self(p_instance)->compiled->find_method(*(const StringName *)p_name);
+	*r_is_valid = m != nullptr;
+	return m ? (GDExtensionInt)m->params.size() : 0;
 }
 
 void call_func(GDExtensionScriptInstanceDataPtr p_self, GDExtensionConstStringNamePtr p_method, const GDExtensionConstVariantPtr *p_args, GDExtensionInt p_argument_count, GDExtensionVariantPtr r_return, GDExtensionCallError *r_error) {
-	Variant ret;
-	self(p_self)->call(*(const StringName *)p_method, p_args, p_argument_count, ret, *r_error);
-	memnew_placement(r_return, Variant(ret));
+	// r_return is uninitialized storage; the call writes the return value straight into it.
+	Variant *ret = memnew_placement(r_return, Variant);
+	self(p_self)->call(*(const StringName *)p_method, p_args, p_argument_count, *ret, *r_error);
 }
 
 void notification_func(GDExtensionScriptInstanceDataPtr, int32_t, GDExtensionBool) {}
@@ -346,7 +366,7 @@ void free_func(GDExtensionScriptInstanceDataPtr p_instance) {
 		// The script object can outlive its owner (a pooled context or another script may hold it),
 		// so cut its link to the owner first: later engine calls through it then fail cleanly.
 		asrt::release_script_owner(inst->object);
-		inst->object->Release();
+		release_instance_object(inst->object);
 		inst->object = nullptr;
 	}
 	if (inst->script.is_valid()) {
@@ -464,63 +484,66 @@ GDExtensionObjectPtr AngelScriptInstance::construct_owner(asIScriptObject *p_obj
 }
 
 void AngelScriptInstance::call(const StringName &p_method, const GDExtensionConstVariantPtr *p_args, GDExtensionInt p_argcount, Variant &r_ret, GDExtensionCallError &r_error) {
-	asIScriptFunction *const *fnp = compiled->methods.getptr(p_method);
-	if (!fnp) {
+	const ASCompiledClass::Method *method = compiled->find_method(p_method);
+	if (!method) {
 		r_error.error = GDEXTENSION_CALL_ERROR_INVALID_METHOD;
 		return;
 	}
-	asIScriptFunction *fn = *fnp;
-	asUINT param_count = fn->GetParamCount();
-	if ((asUINT)p_argcount < param_count) {
-		r_error.error = GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS;
-		r_error.expected = (int32_t)param_count;
-		return;
-	}
-	if ((asUINT)p_argcount > param_count) {
-		r_error.error = GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
+	const asUINT param_count = (asUINT)method->params.size();
+	if ((asUINT)p_argcount != param_count) {
+		r_error.error = (asUINT)p_argcount < param_count ? GDEXTENSION_CALL_ERROR_TOO_FEW_ARGUMENTS : GDEXTENSION_CALL_ERROR_TOO_MANY_ARGUMENTS;
 		r_error.expected = (int32_t)param_count;
 		return;
 	}
 
 	AngelScriptLanguage *lang = AngelScriptLanguage::get_singleton();
 	asIScriptContext *ctx = lang->acquire_context();
-	ctx->Prepare(fn);
-	ctx->SetObject(object);
+	ctx->Prepare(method->fn);
+	// No reference from the context: this instance holds one, and if the instance is freed during the
+	// call, run_context keeps it until the call returns (release_instance_object). Saves two atomic
+	// reference count changes per call. With no room to track the call, the context takes one.
+	if (active_count < MAX_ACTIVE_CALLS) {
+		ctx->SetObjectBorrowed(object);
+	} else {
+		ctx->SetObject(object);
+	}
+	// The instance can be freed while the script runs: nothing below may read `this` or `method`.
+	const int return_type_id = method->return_type_id;
+	const bool return_object = method->return_object;
 
-	// Arguments passed by reference point into the temporaries. If the call may outlive this frame
-	// (it awaits), they must live on the heap.
-	ArgTemps stack_temps;
-	std::unique_ptr<ArgTemps> heap_temps;
-	for (asUINT i = 0; i < param_count; i++) {
-		asDWORD flags = 0;
-		fn->GetParam(i, nullptr, &flags);
-		if (flags & asTM_INOUTREF) {
+	int r;
+	if (param_count == 0) {
+		r_error.error = GDEXTENSION_CALL_OK;
+		std::unique_ptr<ArgTemps> no_temps;
+		r = run_context(ctx, owner, object, no_temps);
+	} else {
+		// Arguments passed by reference point into the temporaries. If the call may outlive this
+		// frame (it awaits), they must live on the heap.
+		ArgTemps stack_temps;
+		std::unique_ptr<ArgTemps> heap_temps;
+		if (method->has_refs) {
 			heap_temps = std::make_unique<ArgTemps>();
-			break;
 		}
-	}
-	ArgTemps &temps = heap_temps ? *heap_temps : stack_temps;
-	for (asUINT i = 0; i < param_count; i++) {
-		int type_id = 0;
-		asDWORD flags = 0;
-		fn->GetParam(i, &type_id, &flags);
-		if (!set_arg(ctx, i, type_id, flags, *(const Variant *)p_args[i], temps)) {
-			r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
-			r_error.argument = (int32_t)i;
-			r_error.expected = asrt::variant_type(type_id);
-			ctx->Unprepare();
-			lang->release_context(ctx);
-			return;
+		ArgTemps &temps = heap_temps ? *heap_temps : stack_temps;
+		for (asUINT i = 0; i < param_count; i++) {
+			const ASCompiledClass::Method::Param &param = method->params[i];
+			if (!set_arg(ctx, i, param, *(const Variant *)p_args[i], temps)) {
+				r_error.error = GDEXTENSION_CALL_ERROR_INVALID_ARGUMENT;
+				r_error.argument = (int32_t)i;
+				r_error.expected = asrt::variant_type(param.type_id);
+				ctx->Unprepare();
+				lang->release_context(ctx);
+				return;
+			}
 		}
+		r_error.error = GDEXTENSION_CALL_OK;
+		r = run_context(ctx, owner, object, heap_temps);
 	}
-
-	r_error.error = GDEXTENSION_CALL_OK;
-	int r = run_context(ctx, owner, object, heap_temps);
 	if (r == asEXECUTION_SUSPENDED) {
 		return; // the context now belongs to the await; Godot gets null, like a GDScript coroutine
 	}
-	if (r == asEXECUTION_FINISHED) {
-		r_ret = get_return(ctx, fn);
+	if (r == asEXECUTION_FINISHED && return_type_id != asTYPEID_VOID) {
+		asrt::to_variant(return_object ? ctx->GetReturnObject() : ctx->GetAddressOfReturnValue(), return_type_id, r_ret);
 	}
 	lang->release_context(ctx);
 }
@@ -629,13 +652,13 @@ void AngelScriptInstance::retire(asIScriptObject *p_old) {
 		a->cancel();
 	}
 	asrt::release_script_owner(p_old);
-	p_old->Release();
+	release_instance_object(p_old);
 }
 
 void AngelScriptInstance::script_await(asIScriptGeneric *g) {
 	asIScriptContext *ctx = asGetActiveContext();
 	Variant *result = memnew_placement(g->GetAddressOfReturnLocation(), Variant);
-	if (active_calls.empty() || active_calls.back().ctx != ctx) {
+	if (active_count == 0 || active_calls[active_count - 1].ctx != ctx) {
 		ctx->SetException("await() only works in code that Godot called (a method, virtual or signal handler)");
 		return;
 	}
@@ -644,7 +667,7 @@ void AngelScriptInstance::script_await(asIScriptGeneric *g) {
 		ctx->SetException("await() on a null Signal");
 		return;
 	}
-	const ActiveCall &call = active_calls.back();
+	const ActiveCall &call = active_calls[active_count - 1];
 	ASAwait *awaiter = memnew(ASAwait);
 	awaiter->ctx = ctx;
 	awaiter->result = result;

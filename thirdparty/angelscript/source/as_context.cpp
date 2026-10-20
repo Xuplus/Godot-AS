@@ -198,6 +198,7 @@ asCContext::asCContext(asCScriptEngine *engine, bool holdRef)
 	m_inExceptionHandler        = false;
 	m_isStackMemoryNotAllocated = false;
 	m_needToCleanupArgs         = false;
+	m_thisBorrowed              = false; // GODOT-AS PATCH (borrowed this)
 	m_currentFunction           = 0;
 	m_callingSystemFunction     = 0;
 	m_initialFunction           = 0;
@@ -473,7 +474,7 @@ int asCContext::GetStateRegisters(asUINT stackLevel, asIScriptFunction **_callin
 		callingSystemFunction = reinterpret_cast<asCScriptFunction*>(tmp[1]);
 		initialFunction       = reinterpret_cast<asCScriptFunction*>(tmp[2]);
 		originalStackPointer  = (asDWORD*)tmp[3];
-		argumentsSize         = (int)tmp[4];
+		argumentsSize         = (int)(tmp[4] & ~(asPWORD(1) << 31)); // GODOT-AS PATCH (borrowed this)
 
 		valueRegister   = asQWORD(asDWORD(tmp[5]));
 		valueRegister  |= asQWORD(tmp[6])<<32;
@@ -709,11 +710,12 @@ int asCContext::Prepare(asIScriptFunction *func)
 		if (m_initialFunction && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT))
 		{
 			asCScriptObject* obj = *(asCScriptObject**)&m_regs.stackFramePointer[0];
-			if (obj)
+			if (obj && !m_thisBorrowed) // GODOT-AS PATCH (borrowed this)
 				obj->Release();
 
 			*(asPWORD*)&m_regs.stackFramePointer[0] = 0;
 		}
+		m_thisBorrowed = false; // GODOT-AS PATCH (borrowed this)
 
 		// Reset stack pointer
 		m_regs.stackPointer = m_originalStackPointer;
@@ -838,9 +840,10 @@ int asCContext::Unprepare()
 	if( m_initialFunction && m_initialFunction->objectType && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT) )
 	{
 		asCScriptObject *obj = *(asCScriptObject**)&m_regs.stackFramePointer[0];
-		if( obj )
+		if( obj && !m_thisBorrowed ) // GODOT-AS PATCH (borrowed this)
 			obj->Release();
 	}
+	m_thisBorrowed = false; // GODOT-AS PATCH (borrowed this)
 
 	// Release the initial function
 	if( m_initialFunction )
@@ -1034,6 +1037,27 @@ int asCContext::SetObject(void *obj)
 	//       The flag could be named something like takeOwnership and have default value of true
 	if( obj && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT) )
 		reinterpret_cast<asCScriptObject*>(obj)->AddRef();
+
+	return 0;
+}
+
+// GODOT-AS PATCH (borrowed this)
+// interface
+int asCContext::SetObjectBorrowed(void *obj)
+{
+	if( m_status != asEXECUTION_PREPARED )
+		return asCONTEXT_NOT_PREPARED;
+
+	if( !m_initialFunction->objectType )
+	{
+		m_status = asEXECUTION_ERROR;
+		return asERROR;
+	}
+
+	asASSERT( *(asPWORD*)&m_regs.stackFramePointer[0] == 0 );
+
+	*(asPWORD*)&m_regs.stackFramePointer[0] = (asPWORD)obj;
+	m_thisBorrowed = obj && (m_initialFunction->objectType->flags & asOBJ_SCRIPT_OBJECT);
 
 	return 0;
 }
@@ -1741,7 +1765,7 @@ int asCContext::PushState()
 	tmp[1] = (asPWORD)m_callingSystemFunction;
 	tmp[2] = (asPWORD)m_initialFunction;
 	tmp[3] = (asPWORD)m_originalStackPointer;
-	tmp[4] = (asPWORD)m_argumentsSize;
+	tmp[4] = (asPWORD)m_argumentsSize | (m_thisBorrowed ? (asPWORD(1) << 31) : 0); // GODOT-AS PATCH (borrowed this)
 
 	// Need to push the value of registers so they can be restored
 	tmp[5] = (asPWORD)asDWORD(m_regs.valueRegister);
@@ -1754,6 +1778,7 @@ int asCContext::PushState()
 
 	// Clear the initial function so that Prepare() knows it must do all validations
 	m_initialFunction = 0;
+	m_thisBorrowed = false; // GODOT-AS PATCH (borrowed this)
 
 	// After this the state should appear as if uninitialized
 	m_callingSystemFunction = 0;
@@ -1790,7 +1815,8 @@ int asCContext::PopState()
 	m_initialFunction      = reinterpret_cast<asCScriptFunction*>(tmp[2]);
 	m_originalStackPointer = (asDWORD*)tmp[3];
 	m_originalStackIndex   = DetermineStackIndex(m_originalStackPointer);
-	m_argumentsSize        = (int)tmp[4];
+	m_argumentsSize        = (int)(tmp[4] & ~(asPWORD(1) << 31)); // GODOT-AS PATCH (borrowed this)
+	m_thisBorrowed         = (tmp[4] & (asPWORD(1) << 31)) != 0;
 
 	m_regs.valueRegister   = asQWORD(asDWORD(tmp[5]));
 	m_regs.valueRegister  |= asQWORD(tmp[6])<<32;

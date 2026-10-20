@@ -27,6 +27,17 @@ struct ASModuleHandle {
 	~ASModuleHandle();
 };
 
+// Hashes and compares StringNames by identity. They are interned, so equal names share one data
+// pointer, while godot-cpp's own StringName hash and == are calls into the engine (and the hash
+// goes through String).
+struct StringNameIdentity {
+	static const void *data(const StringName &p_name) { return *(const void *const *)p_name._native_ptr(); }
+	static uint32_t hash(const StringName &p_name) { return hash_one_uint64((uint64_t)data(p_name)); }
+	static bool compare(const StringName &p_a, const StringName &p_b) { return data(p_a) == data(p_b); }
+};
+template <typename T>
+using StringNameMap = HashMap<StringName, T, StringNameIdentity, StringNameIdentity>;
+
 // Everything we know about one compiled script class. Instances hold a shared_ptr to the class they
 // were created from, so rebuilding never leaves a live instance pointing at another module's code.
 struct ASCompiledClass {
@@ -52,15 +63,62 @@ struct ASCompiledClass {
 		std::vector<SignalArg> args; // from `signal name(args);` declarations
 	};
 
+	// A method Godot can call (virtuals, `call()`), with what AngelScriptInstance::call needs to pass
+	// it Variant arguments, worked out once per build.
+	struct Method {
+		enum Pass : uint8_t {
+			PASS_SLOT, // primitives, enums and handles: converted straight into the argument slot
+			PASS_VALUE, // builtins and Variant by value: converted into a temporary
+			PASS_REF, // builtins and Variant by reference: a temporary passed by address
+			PASS_UNSUPPORTED, // references to primitives and handles
+		};
+		struct Param {
+			int type_id = 0;
+			Pass pass = PASS_SLOT;
+			bool variant = false; // the temporary is a Variant, otherwise a builtin of `vtype`
+			uint32_t vtype = 0;
+		};
+		asIScriptFunction *fn = nullptr;
+		std::vector<Param> params;
+		int return_type_id = 0; // asTYPEID_VOID when there's nothing to return
+		bool return_object = false; // read the return value with GetReturnObject
+		bool has_refs = false; // some parameter is PASS_REF (its temporary must survive an await)
+	};
+
 	std::shared_ptr<ASModuleHandle> module;
 	asITypeInfo *type = nullptr;
 	String path;
 	StringName native_base;
 	bool tool = false;
-	HashMap<StringName, asIScriptFunction *> methods;
+	StringNameMap<Method> methods;
+	// `methods` for calls from Godot: open addressing on the name's data pointer, usually one probe.
+	struct MethodSlot {
+		const void *name = nullptr;
+		const Method *method = nullptr;
+	};
+	std::vector<MethodSlot> method_slots; // power-of-two size, at most half full
 	std::vector<Property> properties;
-	HashMap<StringName, int> property_lookup; // name -> index in `properties`
+	StringNameMap<int> property_lookup; // name -> index in `properties`
 	std::vector<SignalInfo> signals;
+
+	static uint32_t method_slot(const void *p_name, size_t p_size) {
+		return (uint32_t)((((uint64_t)(uintptr_t)p_name >> 4) * 0x9E3779B97F4A7C15ull) >> 32) & (uint32_t)(p_size - 1);
+	}
+	const Method *find_method(const StringName &p_name) const {
+		const void *name = StringNameIdentity::data(p_name);
+		const size_t size = method_slots.size();
+		if (size == 0) {
+			return nullptr;
+		}
+		for (uint32_t i = method_slot(name, size);; i = (i + 1) & (uint32_t)(size - 1)) {
+			const MethodSlot &slot = method_slots[i];
+			if (slot.name == name || !slot.name) {
+				return slot.method;
+			}
+		}
+	}
+	// Fills method_slots from `methods`.
+	void index_methods();
 
 	const Property *find_property(const StringName &p_name) const {
 		const int *i = property_lookup.getptr(p_name);

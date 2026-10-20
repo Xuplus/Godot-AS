@@ -72,6 +72,18 @@ func _ready() -> void:
 	check(api_failures.is_empty(), "api_test.as: generated API from AngelScript")
 	check(hits == [3], "script signal emitted from AngelScript reached GDScript")
 
+	for method in [&"free_self", &"free_nested"]:
+		var freed := Node.new()
+		freed.set_script(load("res://tests/self_free.as"))
+		var freed_id := freed.get_instance_id()
+		var expected := "kept after free" if method == &"free_self" else "kept after free!"
+		check(freed.call(method) == expected, "%s: an instance freed during its own call finishes it" % method)
+		check(not is_instance_id_valid(freed_id), "%s: the object is gone afterwards" % method)
+	var probe := Node.new()
+	probe.set_script(load("res://tests/self_free.as"))
+	check(probe.call(&"destroyed") == 2, "script objects freed during their call are destroyed when it returns")
+	probe.free()
+
 	var dialect := Node.new()
 	dialect.set_script(load("res://tests/dialect_test.as"))
 	add_child(dialect)

@@ -90,6 +90,7 @@ measured: the only device here is an emulator.
   generic thunk plus the ptrcall both languages pay.
 - **Calls from Godot into script** cost 105 ns against 51 ns in a release build: method lookup,
   context preparation and execution. That's also why 5000 `_process` nodes take 3.5 ms against 2.4.
+  Since cut to 76 ns (see [Calls from Godot into script](#calls-from-godot-into-script) below).
 - **The release templates don't change AngelScript's numbers**: the extension is built optimized
   either way. GDScript gets faster in release (fewer debug checks), except `math_loop`, which is
   slower in Godot's release template than in its editor build (reproduced in every run).
@@ -160,3 +161,62 @@ into script and the garbage collector don't involve compiled code and didn't cha
 **VM timings move between builds.** Rebuilding with unrelated source changes moved the VM's
 `vector_loop_floats` from 88 to 137–157 ms, and `math_loop` from 205 to 181 ms, with the same
 bytecode and the same VM source (details in [aot.md](aot.md)). Treat a single VM number as ±30%.
+
+## Calls from Godot into script
+
+How `node.call("noop")`, a virtual like `_process` and a signal reach a script method
+(`AngelScriptInstance::call`), measured and cut on 2026-10-20.
+
+**Where the time went.** Measured in an exported release with a temporary C++ loop that ran the
+call path one step at a time (1M calls each, best of 7). The GDScript loop that calls `noop` costs
+about 27 ns of the total in both languages; GDScript's own method call is the other ~21-25 ns.
+
+| Step | Before | After |
+|---|---:|---:|
+| Find the method (`HashMap<StringName>` → `find_method`) | ~6 ns | 2 ns |
+| Take and return a pooled context | ~4 ns | ~3.5 ns |
+| `Prepare` + `SetObject` + `Execute` (AngelScript) | ~32 ns | ~29 ns (borrowed `this`; ~25 with the GC change below) |
+| `run_context` / `run` (await and debugger bookkeeping) | ~8 ns | ~8 ns |
+| Arguments, return value and Variant copies | ~17 ns | ~4 ns for a call without arguments |
+
+**What changed:**
+- **Method lookup.** godot-cpp's `StringName` hash and `==` are calls into the engine, and the
+  hash goes through `String`. Methods are now in an open-addressing table keyed on the
+  StringName's data pointer (StringNames are interned).
+- **Per-method data at build time** (`ASCompiledClass::Method`): how each parameter is passed,
+  the return type, and whether any parameter is a reference. The call used to ask AngelScript and
+  the type registry for this on every call, twice per parameter.
+- **No Variant copies.** The return value is written straight into Godot's return slot, and void
+  methods don't touch it. godot-cpp's Variant constructor, copy and destructor are each a call
+  into the engine, and a void call used to make about seven of them.
+- **Borrowed `this`.** The context no longer adds a reference to the script object (an AngelScript
+  patch, `SetObjectBorrowed`). The instance holds one already. If the instance is freed during the
+  call (`free()` on itself, possibly from a nested call), the outermost call running that object
+  drops the reference when it returns. `tests/self_free.as` covers both cases; without this
+  hand-over, the test crashes.
+- **Plain thread-local arrays** for the context pool and the running calls. MSVC checks
+  initialization on every access to a `thread_local std::vector`.
+
+Tried and dropped: caching AngelScript's thread-local data pointer (`TlsGetValue`, ~1 ns) and
+skipping `GetRealFunc` / `CleanReturnObject` for plain script functions (no measurable change).
+
+**Results.** `python tools/bench.py --compare` against the baselines, best of 3 runs, on this
+desktop with other load running. GDScript's times are from the same runs.
+
+| Build | Row | AS before | AS now | GDScript | GD/AS before | GD/AS now |
+|---|---|---:|---:|---:|---:|---:|
+| Release | 1M calls Godot → script | 104.7 | 76.4 | 51.3 | 0.48x | 0.67x |
+| Release | 5000 nodes with `_process` (ms/frame) | 3.49 | 3.15 | 2.20 | 0.68x | 0.70x |
+| Release, compiled scripts | 1M calls Godot → script | 106.1 | 79.6 | 51.5 | 0.47x | 0.65x |
+| Release, compiled scripts | 5000 nodes with `_process` (ms/frame) | 2.51 | 2.17 | 2.37 | 0.95x | **1.09x** |
+| Editor | 1M calls Godot → script | 114.7 | 84.3 | 94.3 | 0.83x | **1.12x** |
+| Editor | 5000 nodes with `_process` (ms/frame) | 3.83 | 3.45 | 2.99 | 0.78x | 0.87x |
+
+The other rows didn't change beyond the build-to-build variance noted above (the VM's
+`vector_loop_floats` measured 154-161 ms in these builds).
+
+**What's left.** A call still costs about 25 ns more than GDScript's. Most of it is AngelScript's
+`Prepare` and `Execute`, a chain of small out-of-line functions (stack setup, the thread's
+active-context stack, `ExecuteNext`'s prologue), plus our await/debugger bookkeeping around it.
+Running the garbage collector once per frame instead of after every call (the GC change in
+progress) saves another 3-4 ns per call, and the "GC objects pending" row is that change's.
