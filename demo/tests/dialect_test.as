@@ -202,4 +202,20 @@ class DialectTest : Node
 		Variant second = await(ping);
 		await_sum += int(second);
 	}
+
+	// Garbage for the collector check in run_tests.gd: pairs that only cycle detection frees.
+	void make_rings(int count)
+	{
+		for (int i = 0; i < count; i++)
+		{
+			GcRing@ a = GcRing();
+			@a.next = GcRing();
+			@a.next.next = a;
+		}
+	}
+}
+
+class GcRing
+{
+	GcRing@ next;
 }

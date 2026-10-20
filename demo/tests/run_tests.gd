@@ -7,6 +7,7 @@ var frames := 0
 var from_code: Node2D
 var from_scene: Node2D
 var spinner: MeshInstance3D
+var gc_detected := 0
 
 
 func check(cond: bool, what: String) -> void:
@@ -107,6 +108,12 @@ func _ready() -> void:
 	check(dialect.get("await_stage") == 3 and dialect.get("await_sum") == 12, "nested await, and await returns the signal argument")
 	check(dialect.get("await_label") == "go", "reference arguments survive a suspension")
 
+	var gc_before: Dictionary = AngelScriptLanguage.get_gc_stats()
+	dialect.call("make_rings", 500)
+	var gc_after: Dictionary = AngelScriptLanguage.get_gc_stats()
+	check(gc_after.objects - gc_before.objects == 1000, "calls into script don't run the garbage collector")
+	gc_detected = gc_after.detected
+
 	print("  (expected) the next error is a deliberate script exception:")
 	from_code.call("crash")
 	check(from_code.get_script() == script, "node survives a script exception")
@@ -116,11 +123,18 @@ func _process(_delta: float) -> void:
 	frames += 1
 	if frames < 10:
 		return
+	# Then until the collector, which runs once per frame, has found the rings from _ready.
+	var detected: int = AngelScriptLanguage.get_gc_stats().detected - gc_detected
+	if frames > 10 and detected < 1000 and frames < 600:
+		return
+	if frames > 10:
+		check(detected >= 1000, "the collector frees cyclic garbage between frames (%d of 1000 objects, %d frames)" % [detected, frames])
+		print("== %s" % ("ALL PASSED" if failures == 0 else "%d FAILED" % failures))
+		get_tree().quit(1 if failures else 0)
+		return
 	var ticks: int = from_code.call("get_ticks")
 	check(ticks >= 9, "_process called every frame (ticks=%d)" % ticks)
 	check(from_code.position.x > 10.0, "_process moved the node (x=%.1f)" % from_code.position.x)
 	check(from_code.rotation > 0.0, "_process rotated the node")
 	check(spinner.rotation.y > 0.0, "3D _process rotated the mesh (y=%.3f)" % spinner.rotation.y)
 	check(spinner.position.y != 0.0, "3D _process moved the mesh (y=%.3f)" % spinner.position.y)
-	print("== %s" % ("ALL PASSED" if failures == 0 else "%d FAILED" % failures))
-	get_tree().quit(1 if failures else 0)

@@ -92,6 +92,7 @@ All `.as` files under `res://` compile into one module, like UE-AS. Classes see 
 - **Main class of a file:** the one named after the file, otherwise the first class extending an engine class.
 - **Metadata:** `[export]` and `[signal]` are CScriptBuilder metadata. Export defaults come from compiling the field's initializer expression; constructors are never run for defaults. `[signal] Signal x;` fields are filled with the owner's signal at instance creation.
 - **Calls from Godot:** `AngelScriptInstance::call` uses a per-thread context pool. Contexts are deliberately not `Unprepare`d, to keep AngelScript's fast path; this is safe because instance teardown releases `__self` first. A context suspended by `await` leaves the pool until it finishes.
+- **Garbage collector:** AngelScript's automatic collection is off (it ran a step after every call into script). `_frame()` runs incremental steps (`collect_garbage`), and discarding a module goes through `discard_module`, which runs a full collection. See `docs/benchmarks.md`.
 - **Variant conversion** is centralized in `asrt::to_variant` / `from_variant`, keyed on AngelScript type ids via a type registry.
 
 ### Hot reload (`as_language.cpp`, `as_project.cpp`, `as_instance.cpp`)

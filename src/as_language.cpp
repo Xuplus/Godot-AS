@@ -287,6 +287,7 @@ Dictionary template_dict(const BuiltInTemplate &p_template, int p_id) {
 
 void AngelScriptLanguage::_bind_methods() {
 	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("get_startup_stats"), &AngelScriptLanguage::get_startup_stats);
+	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("get_gc_stats"), &AngelScriptLanguage::get_gc_stats);
 	// Editor services as plain calls, for tests and external tools (the editor itself goes through
 	// the ScriptLanguage virtuals).
 	ClassDB::bind_static_method("AngelScriptLanguage", D_METHOD("complete_code", "code", "path"), &AngelScriptLanguage::complete_code);
@@ -377,6 +378,8 @@ void AngelScriptLanguage::ensure_engine() {
 	engine->SetMessageCallback(asFUNCTION(message_callback), this, asCALL_CDECL);
 	// Engine classes are implicit handles: `Node n = get_node("x");` without `@`.
 	engine->SetEngineProperty(asEP_ALLOW_IMPLICIT_HANDLE_TYPES, true);
+	// Collected from _frame() instead of after every call (see collect_garbage).
+	engine->SetEngineProperty(asEP_AUTO_GARBAGE_COLLECT, false);
 	uint64_t start = Time::get_singleton()->get_ticks_usec();
 	registration_errors = asrt::register_api(engine);
 	registration_ms = (Time::get_singleton()->get_ticks_usec() - start) / 1000.0;
@@ -541,6 +544,18 @@ Dictionary AngelScriptLanguage::get_startup_stats() {
 		singleton->ensure_engine();
 		d["registration_ms"] = singleton->registration_ms;
 		d["registration_errors"] = singleton->registration_errors;
+	}
+	return d;
+}
+
+Dictionary AngelScriptLanguage::get_gc_stats() {
+	Dictionary d;
+	if (singleton && singleton->engine) {
+		asUINT size = 0, destroyed = 0, detected = 0;
+		singleton->engine->GetGCStatistics(&size, &destroyed, &detected, nullptr, nullptr);
+		d["objects"] = (int64_t)size;
+		d["destroyed"] = (int64_t)destroyed;
+		d["detected"] = (int64_t)detected;
 	}
 	return d;
 }
@@ -974,11 +989,42 @@ void AngelScriptLanguage::_profiling_set_save_native_calls(bool p_enable) {}
 int32_t AngelScriptLanguage::_profiling_get_accumulated_data(ScriptLanguageExtensionProfilingInfo *p_info_array, int32_t p_info_max) { return 0; }
 int32_t AngelScriptLanguage::_profiling_get_frame_data(ScriptLanguageExtensionProfilingInfo *p_info_array, int32_t p_info_max) { return 0; }
 void AngelScriptLanguage::_frame() {
-	if (!hot_reload) {
+	if (hot_reload && disk_changed.exchange(false)) {
+		reload_from_disk();
+	}
+	collect_garbage();
+}
+
+void AngelScriptLanguage::collect_garbage() {
+	if (!engine) {
 		return;
 	}
-	if (disk_changed.exchange(false)) {
-		reload_from_disk();
+	asUINT size = 0, destroyed = 0;
+	engine->GetGCStatistics(&size, &destroyed, nullptr, nullptr, nullptr);
+	// Destroying moves an object from `size` to `destroyed`, so their sum only grows with new objects.
+	asUINT added = size + destroyed - gc_seen;
+	gc_seen = size + destroyed;
+	if (size == 0) {
+		gc_debt = 0;
+		return;
+	}
+	// Each step looks at one new object, one old object and does one step of the detection of
+	// cyclic garbage, so a few steps per new object keep up with any allocation rate.
+	gc_debt += added * GC_STEPS_PER_NEW_OBJECT;
+	// A burst of objects is paid off over GC_DEBT_FRAMES or so frames instead of in one.
+	asUINT steps = gc_debt <= GC_STEPS_PER_FRAME ? gc_debt : std::max(GC_STEPS_PER_FRAME, gc_debt / GC_DEBT_FRAMES);
+	gc_debt -= steps;
+	// Long-lived objects end up in the old list, where only the detection of cyclic references
+	// finds garbage. It needs a few steps per old object; this finishes one every few hundred
+	// frames, however many objects there are (and within a few seconds when there are few).
+	steps += std::max(size / GC_FRAMES_PER_SWEEP, GC_MIN_STEPS);
+	engine->GarbageCollect(asGC_ONE_STEP | asGC_DESTROY_GARBAGE | asGC_DETECT_GARBAGE, steps);
+}
+
+void AngelScriptLanguage::discard_module(asIScriptModule *p_module) {
+	p_module->Discard();
+	if (engine) {
+		engine->GarbageCollect(asGC_FULL_CYCLE);
 	}
 }
 

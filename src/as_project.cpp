@@ -188,7 +188,7 @@ const std::vector<std::string> &ASMetadata::for_property(asITypeInfo *p_type, in
 
 ASModuleHandle::~ASModuleHandle() {
 	if (module) {
-		module->Discard();
+		AngelScriptLanguage::get_singleton()->discard_module(module);
 	}
 }
 
@@ -383,7 +383,7 @@ bool ASProject::build_module(const std::map<String, File> &p_files, const String
 	}
 	*r_module = r_builder.GetModule();
 	if (r_builder.BuildModule() < 0) {
-		(*r_module)->Discard();
+		AngelScriptLanguage::get_singleton()->discard_module(*r_module);
 		*r_module = nullptr;
 		return false;
 	}
@@ -674,7 +674,7 @@ bool ASProject::validate(const String &p_path, const String &p_source) const {
 	asIScriptModule *module = nullptr;
 	bool ok = build_module(copy, "__validate__", &module, builder);
 	if (module) {
-		module->Discard();
+		AngelScriptLanguage::get_singleton()->discard_module(module);
 	}
 	return ok;
 }
@@ -817,7 +817,7 @@ bool ASProject::build_from_package() {
 	ByteStream stream;
 	stream.data.assign(package_bytecode.ptr(), package_bytecode.ptr() + package_bytecode.size());
 	if (module->LoadByteCode(&stream) < 0) {
-		module->Discard();
+		AngelScriptLanguage::get_singleton()->discard_module(module);
 		ERR_FAIL_V_MSG(false, "AngelScript: the compiled scripts don't match this build of the extension. Export the project again.");
 	}
 	uint64_t loaded = Time::get_singleton()->get_ticks_usec();

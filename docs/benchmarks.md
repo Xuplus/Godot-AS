@@ -94,22 +94,60 @@ measured: the only device here is an emulator.
   either way. GDScript gets faster in release (fewer debug checks), except `math_loop`, which is
   slower in Godot's release template than in its editor build (reproduced in every run).
 
-## The garbage collector problem
+## The garbage collector
 
-AngelScript runs one garbage collector step at the end of every call into script, as long as any
-garbage-collected script object exists. A script class is garbage collected when it holds a handle
-to a script class that isn't `final` (`BenchTree@ left`). Engine handles don't count.
+**The problem (in the baseline above):** AngelScript ran one garbage collector step at the end of
+every call into script, as long as any garbage-collected script object existed. A script class is
+garbage collected when it holds a handle to a script class that isn't `final` (`BenchTree@ left`).
+Engine handles don't count. After `binary_trees` left 262k tree nodes to collect, each call from
+Godot into script cost 3.4x more (105 → 355 ns), until the collector had walked them all, a few
+million calls later. A game with long-lived object graphs in script would pay this on every
+`_process` call.
 
-After `binary_trees` leaves 262k tree nodes to collect, each call from Godot into script costs 3.4x
-more (105 → 355 ns). It stays that way until the collector has walked them all, a few million calls
-later. A game with long-lived object graphs in script pays this on every `_process` call.
+**The fix:** `asEP_AUTO_GARBAGE_COLLECT` is off, and `AngelScriptLanguage::_frame()` drives the
+collector (`collect_garbage`):
+- **4 incremental steps per object added since the last frame.** A step looks at one new object and
+  one old object, and advances the detection of cyclic references by one object. Fewer than 4 didn't
+  keep up with a steady stream of cyclic garbage (below).
+- **Bursts are spread out:** up to 4096 steps owed are paid at once, more at 1/16 per frame.
+- **Plus `max(objects / 64, 256)` steps every frame while objects exist.** Long-lived objects move
+  to the collector's old list, where only cycle detection finds garbage. This finishes a detection
+  pass every few hundred frames however big the heap is, and within ~13 frames when it's small.
+- **Discarding a module runs a full collection** (`discard_module`): rebuilds, hot reload, failed
+  builds, validation, export. AngelScript did that itself with automatic collection; it destroys the
+  garbage still using the old module's types, so the module can be freed. Shutdown already runs full
+  collections (`ShutDownAndRelease`).
+- **Games that never run a frame** (a `--script` that quits in `_initialize`) collect nothing until
+  shutdown. Frames run in the editor too, so tool scripts are collected like games.
+- `AngelScriptLanguage.get_gc_stats()` returns the collector's counters (`objects`, `destroyed`,
+  `detected`). `run_tests` checks that a call doesn't collect and that cyclic garbage is freed between
+  frames.
 
-The fix doesn't need AOT:
-1. Turn off `asEP_AUTO_GARBAGE_COLLECT`.
-2. Run incremental steps once per frame from `AngelScriptLanguage::_frame()`, sized by how many
-   objects were created.
+Editor build, best of 3 runs (`python tools/bench.py --compare docs/bench/windows-editor.json`):
 
-The runner measures this row separately, so the other rows don't depend on the order they run in.
+| Benchmark | Before | After | GDScript | GD/AS before | GD/AS after |
+|---|---:|---:|---:|---:|---:|
+| 1M calls Godot → script | 114.7 | 109.6 | 94.1 | 0.83x | 0.86x |
+| binary_trees(15) | 122.4 | 55.2 | 468.3 | 3.80x | 8.49x |
+| 1M calls, GC objects pending | 360.7 | 109.2 | 93.5 | 0.26x | 0.86x |
+
+The other rows didn't change, except `vector_loop_floats`, which went from 88 to 142 ms. That's code
+layout, not the collector: the same binary with automatic collection switched back on gives 142 ms
+too, and earlier builds gave 89–114 ms. The interpreter's inner loop is sensitive to where the
+linker puts it; AOT should make that row moot. `binary_trees` is faster because freeing the trees
+moved out of the call into the next frames.
+
+**Memory over frames** (a scratch soak test, `node.call()` each frame from a `SceneTree` script):
+
+| Load per frame | Before (automatic) | After (per frame) |
+|---|---|---|
+| A 8191-node tree + 50 rings of 20 objects (cyclic) | grows without bound: 9.7M objects after 1200 frames, 6–9 ms per frame in the calls | flat at 9191 objects (one frame's worth); collector ~1.2 ms per frame |
+| A 262k-node tree + 2000 rings every 60 frames | grows: 5.6M objects after 1200 frames | 0 objects before each burst; max 7.9 ms in one frame, ~15 frames to clear a burst |
+| 262k live objects, no allocation | — | collector ~0.5 ms per frame; 1M calls 107 ms |
+
+The collector costs about 120 ns per freed object in steady state, more (~150 ns) when a burst makes
+the heap large. AngelScript's own automatic mode never caught up with either load: its per-call
+steps only add up when there are many calls.
 
 ## Measuring
 

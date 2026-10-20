@@ -75,6 +75,24 @@ public:
 	asIScriptEngine *get_engine();
 	void ensure_engine();
 
+	// --- Garbage collector -------------------------------------------------------------------
+	// AngelScript's automatic collection runs a step at the end of every call into script while
+	// any garbage-collected object exists, which tripled the cost of a call with many of them
+	// pending. It's off: _frame() runs incremental steps instead, GC_STEPS_PER_NEW_OBJECT for each
+	// object added since the last frame (spread over frames when that's a lot), plus a share of
+	// the objects tracked. Discarding a module runs a full collection (discard_module).
+	static constexpr asUINT GC_STEPS_PER_NEW_OBJECT = 4;
+	static constexpr asUINT GC_STEPS_PER_FRAME = 4096; // debt up to this is paid at once
+	static constexpr asUINT GC_DEBT_FRAMES = 16;
+	static constexpr asUINT GC_FRAMES_PER_SWEEP = 64;
+	static constexpr asUINT GC_MIN_STEPS = 256;
+	asUINT gc_seen = 0; // objects ever added to the collector, as of the last frame
+	asUINT gc_debt = 0; // steps owed for them
+	void collect_garbage();
+	// Discards a module and runs a full collection, which destroys the garbage still using the
+	// module's types so it can be freed (what AngelScript does itself with automatic collection).
+	void discard_module(asIScriptModule *p_module);
+
 	// Collect diagnostics from compilations done while the returned scope is alive.
 	void set_diagnostic_sink(std::vector<ASDiagnostic> *p_sink) { diagnostic_sink = p_sink; }
 	// Prints collected diagnostics the way the message callback would have.
@@ -104,6 +122,8 @@ public:
 
 	// Startup cost of registering the Godot API: { "registration_ms", "registration_errors" }.
 	static Dictionary get_startup_stats();
+	// The garbage collector's counters: { "objects" (tracked now), "destroyed", "detected" (in cycles) }.
+	static Dictionary get_gc_stats();
 	static Dictionary complete_code(const String &p_code, const String &p_path);
 	static Dictionary lookup_code(const String &p_code, const String &p_symbol, const String &p_path);
 	static TypedArray<Dictionary> get_templates(const StringName &p_base_class);
