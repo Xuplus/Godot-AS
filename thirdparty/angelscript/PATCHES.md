@@ -121,6 +121,19 @@ implementation through these functions, each a copy of that instruction's case i
 Files: `include/angelscript.h` (declarations after `asIJITCompilerV2`), `source/as_jit_helpers.cpp`
 (new). Nothing else changes; the stock JIT interface (`SetJITCompiler`, JitEntry) does the rest.
 
+## Borrowed this
+
+`asIScriptContext::SetObjectBorrowed(obj)` is `SetObject` without adding a reference to the object.
+The context remembers that (`m_thisBorrowed`), so `Prepare` and `Unprepare` don't release it, and
+`PushState`/`PopState` keep the flag of the outer state (in a spare bit of the saved argument size).
+
+Godot-AS calls every script method from Godot this way. The instance holds a reference to its
+script object, and an instance freed during a call hands its reference to the running call
+(`release_instance_object` in `as_instance.cpp`). That saves two atomic reference count changes
+per call, about 7 ns.
+
+Files: `include/angelscript.h`, `source/as_context.cpp`, `source/as_context.h`.
+
 ## Exact float literals (bug fix)
 
 `asStringScanDouble` summed `digit * 0.1^n`, which rounds at every step: `0.75` became

@@ -74,6 +74,7 @@ public:
 
 	// Object pointer for calling class methods
 	int SetObject(void *obj);
+	int SetObjectBorrowed(void *obj); // GODOT-AS PATCH (borrowed this)
 
 	// Arguments
 	int   SetArgByte(asUINT arg, asBYTE value);
@@ -225,6 +226,7 @@ public:
 	asCScriptFunction *m_initialFunction;
 	int                m_returnValueSize;
 	int                m_argumentsSize;
+	bool               m_thisBorrowed; // GODOT-AS PATCH (borrowed this): the initial function's object has no reference from this context
 
 	// Cache for GetArgsOnStack
 	asCArray<int>      m_argsOnStackCache;

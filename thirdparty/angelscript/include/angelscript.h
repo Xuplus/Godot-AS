@@ -950,6 +950,9 @@ public:
 
 	// Object pointer for calling class methods
 	virtual int   SetObject(void *obj) = 0;
+	// GODOT-AS PATCH (borrowed this): like SetObject, without adding a reference. The application
+	// keeps the object alive until the context is prepared again or unprepared.
+	virtual int   SetObjectBorrowed(void *obj) = 0;
 
 	// Arguments
 	virtual int   SetArgByte(asUINT arg, asBYTE value) = 0;

@@ -373,15 +373,15 @@ TypedArray<Dictionary> AngelScript::_get_documentation() const {
 
 bool AngelScript::_has_method(const StringName &p_method) const {
 	const std::shared_ptr<ASCompiledClass> &cls = get_compiled();
-	return cls && cls->methods.has(p_method);
+	return cls && cls->find_method(p_method);
 }
 
 bool AngelScript::_has_static_method(const StringName &p_method) const { return false; }
 
 Dictionary AngelScript::_get_method_info(const StringName &p_method) const {
 	const std::shared_ptr<ASCompiledClass> &cls = get_compiled();
-	asIScriptFunction *const *fn = cls ? cls->methods.getptr(p_method) : nullptr;
-	return fn ? method_to_dict(*fn) : Dictionary();
+	const ASCompiledClass::Method *m = cls ? cls->methods.getptr(p_method) : nullptr;
+	return m ? method_to_dict(m->fn) : Dictionary();
 }
 
 bool AngelScript::_is_tool() const {
@@ -450,8 +450,8 @@ void AngelScript::_update_exports() {
 TypedArray<Dictionary> AngelScript::_get_script_method_list() const {
 	TypedArray<Dictionary> out;
 	if (const std::shared_ptr<ASCompiledClass> &cls = get_compiled()) {
-		for (const KeyValue<StringName, asIScriptFunction *> &kv : cls->methods) {
-			out.push_back(method_to_dict(kv.value));
+		for (const KeyValue<StringName, ASCompiledClass::Method> &kv : cls->methods) {
+			out.push_back(method_to_dict(kv.value.fn));
 		}
 	}
 	return out;

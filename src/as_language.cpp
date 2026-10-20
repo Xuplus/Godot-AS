@@ -27,7 +27,16 @@
 AngelScriptLanguage *AngelScriptLanguage::singleton = nullptr;
 
 namespace {
-thread_local std::vector<asIScriptContext *> context_pool;
+// Idle contexts of this thread. Plain data, like `running` below: every call from Godot takes one.
+constexpr int MAX_POOLED = 64;
+thread_local asIScriptContext *context_pool[MAX_POOLED];
+thread_local int pooled_count = 0;
+
+void release_pooled_contexts() {
+	while (pooled_count > 0) {
+		context_pool[--pooled_count]->Release();
+	}
+}
 
 // Contexts executing on this thread, outermost first. A script call that goes through the engine
 // and back into script runs in another context, so the script call stack spans all of them.
@@ -390,10 +399,8 @@ asIScriptEngine *AngelScriptLanguage::get_engine() {
 }
 
 asIScriptContext *AngelScriptLanguage::acquire_context() {
-	if (!context_pool.empty()) {
-		asIScriptContext *ctx = context_pool.back();
-		context_pool.pop_back();
-		return ctx;
+	if (pooled_count > 0) {
+		return context_pool[--pooled_count];
 	}
 	asIScriptContext *ctx = get_engine()->CreateContext();
 	if (debugger_active) {
@@ -486,9 +493,14 @@ void AngelScriptLanguage::debug_exception_callback(asIScriptContext *p_ctx, Ange
 
 void AngelScriptLanguage::release_context(asIScriptContext *p_ctx) {
 	// No Unprepare(): preparing the same function again (e.g. _process on many nodes of one class)
-	// takes AngelScript's fast path. The context keeps a reference to the last object until it is
-	// reused, which is safe because freed instances null their owner first (see free_func).
-	context_pool.push_back(p_ctx);
+	// takes AngelScript's fast path. The context keeps the last object until it is reused (a
+	// reference, or for calls from Godot a borrowed pointer that Prepare() doesn't touch), which is
+	// safe because freed instances null their owner first (see free_func).
+	if (pooled_count < MAX_POOLED) {
+		context_pool[pooled_count++] = p_ctx;
+	} else {
+		p_ctx->Release();
+	}
 }
 
 bool AngelScriptLanguage::execute(asIScriptContext *p_ctx) {
@@ -682,10 +694,7 @@ void AngelScriptLanguage::_finish() {
 	if (!engine) {
 		return;
 	}
-	for (asIScriptContext *ctx : context_pool) {
-		ctx->Release();
-	}
-	context_pool.clear();
+	release_pooled_contexts();
 	ASProject::get().clear();
 	engine->ShutDownAndRelease();
 	engine = nullptr;
@@ -851,10 +860,7 @@ void AngelScriptLanguage::_remove_named_global_constant(const StringName &p_name
 void AngelScriptLanguage::_thread_enter() {}
 
 void AngelScriptLanguage::_thread_exit() {
-	for (asIScriptContext *ctx : context_pool) {
-		ctx->Release();
-	}
-	context_pool.clear();
+	release_pooled_contexts();
 }
 
 // While the debugger is in a break, it asks about the script frames of the thread that broke, which

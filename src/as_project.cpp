@@ -158,6 +158,36 @@ bool evaluate_expression(asIScriptModule *p_module, const std::string &p_expr, i
 	return ok;
 }
 
+ASCompiledClass::Method make_method(asIScriptFunction *p_fn) {
+	ASCompiledClass::Method m;
+	m.fn = p_fn;
+	m.params.resize(p_fn->GetParamCount());
+	for (asUINT i = 0; i < m.params.size(); i++) {
+		ASCompiledClass::Method::Param &p = m.params[i];
+		asDWORD flags = 0;
+		p_fn->GetParam(i, &p.type_id, &flags);
+		asrt::TypeInfo info = asrt::type_info(p.type_id);
+		bool ref = (flags & asTM_INOUTREF) != 0;
+		if (info.kind == asrt::TypeKind::Builtin || info.kind == asrt::TypeKind::Variant) {
+			p.pass = ref ? ASCompiledClass::Method::PASS_REF : ASCompiledClass::Method::PASS_VALUE;
+			p.variant = info.kind == asrt::TypeKind::Variant;
+			p.vtype = info.vtype;
+			m.has_refs = m.has_refs || ref;
+		} else {
+			p.pass = ref ? ASCompiledClass::Method::PASS_UNSUPPORTED : ASCompiledClass::Method::PASS_SLOT;
+		}
+	}
+	m.return_type_id = p_fn->GetReturnTypeId();
+	if (m.return_type_id != asTYPEID_VOID) {
+		m.return_object = (m.return_type_id & asTYPEID_MASK_OBJECT) && !(m.return_type_id & asTYPEID_OBJHANDLE);
+		asITypeInfo *ti = p_fn->GetEngine()->GetTypeInfoById(m.return_type_id);
+		if (ti && (ti->GetFlags() & asOBJ_REF) && !(m.return_type_id & asTYPEID_OBJHANDLE)) {
+			m.return_object = true; // a reference type returned by reference: GetReturnObject is the object
+		}
+	}
+	return m;
+}
+
 } // namespace
 
 void ASMetadata::capture(asIScriptModule *p_module, CScriptBuilder &p_builder) {
@@ -194,6 +224,22 @@ const std::vector<std::string> &ASMetadata::for_property(asITypeInfo *p_type, in
 ASModuleHandle::~ASModuleHandle() {
 	if (module) {
 		module->Discard();
+	}
+}
+
+void ASCompiledClass::index_methods() {
+	size_t size = 2;
+	while (size < methods.size() * 2) {
+		size *= 2;
+	}
+	method_slots.assign(size, MethodSlot());
+	for (const KeyValue<StringName, Method> &kv : methods) {
+		const void *name = StringNameIdentity::data(kv.key);
+		uint32_t i = method_slot(name, size);
+		while (method_slots[i].name) {
+			i = (i + 1) & (uint32_t)(size - 1);
+		}
+		method_slots[i] = { name, &kv.value };
 	}
 }
 
@@ -456,8 +502,9 @@ std::shared_ptr<ASCompiledClass> ASProject::make_class(asIScriptModule *p_module
 		if (fn->IsPrivate() || fn->IsProtected() || strncmp(fn_name, "__", 2) == 0) {
 			continue;
 		}
-		cls->methods.insert(StringName(fn_name), fn);
+		cls->methods.insert(StringName(fn_name), make_method(fn));
 	}
+	cls->index_methods();
 	std::sort(defaults.begin(), defaults.end(), [](const DefaultStatement &a, const DefaultStatement &b) {
 		return a.depth != b.depth ? a.depth < b.depth : a.line < b.line;
 	});
